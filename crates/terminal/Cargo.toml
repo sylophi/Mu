@@ -1,0 +1,11 @@
+[package]
+name = "mu-terminal"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+gpui-kit.workspace = true
+alacritty_terminal = "0.26"
+libc.workspace = true
+smol.workspace = true

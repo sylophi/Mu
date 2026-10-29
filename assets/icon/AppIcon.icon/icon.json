@@ -1,0 +1,45 @@
+{
+  "fill": {
+    "solid": "srgb:0.09804,0.09412,0.10196,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "glass": true,
+          "image-name": "cyan.svg",
+          "name": "cyan"
+        },
+        {
+          "glass": true,
+          "image-name": "green.svg",
+          "name": "green"
+        },
+        {
+          "glass": true,
+          "image-name": "yellow.svg",
+          "name": "yellow"
+        },
+        {
+          "glass": true,
+          "image-name": "pink.svg",
+          "name": "pink"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "specular": true,
+      "translucency": {
+        "enabled": true,
+        "value": 0.4
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

@@ -1,0 +1,78 @@
+[workspace]
+members = ["crates/terminal"]
+
+[workspace.dependencies]
+gpui-kit = "=0.7.3"
+libc = "0.2"
+smol = "2"
+
+[package]
+name = "mu"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+gpui-kit = { workspace = true, features = [
+    "tree-sitter-bash",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-java",
+    "tree-sitter-javascript",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-python",
+    "tree-sitter-ruby",
+    "tree-sitter-rust",
+    "tree-sitter-swift",
+    "tree-sitter-toml",
+    "tree-sitter-tsx",
+    "tree-sitter-typescript",
+    "tree-sitter-yaml",
+] }
+mu-terminal = { path = "crates/terminal" }
+anyhow = "1"
+block2 = "0.6"
+chrono = "0.4"
+ignore = "0.4"
+image = { version = "0.25", default-features = false }
+libc.workspace = true
+notify = "=8.2.0"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSWindow", "NSWorkspace", "objc2-uniform-type-identifiers"] }
+objc2-core-foundation = { version = "0.3", features = ["block2"] }
+objc2-core-graphics = "0.3"
+objc2-core-text = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSData", "NSDictionary", "NSError", "NSFileManager", "NSPathUtilities", "NSProcessInfo", "NSString", "NSURL"] }
+objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "QLThumbnailGenerationRequest", "QLThumbnailGenerator", "QLThumbnailRepresentation"] }
+objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["std", "QLPreviewItem", "QLPreviewPanel", "objc2-app-kit"] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTCoreTypes", "UTType"] }
+rayon = "1"
+raw-window-handle = "0.6"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smol.workspace = true
+# Without its thread pool, whose idle threads spin between the once-a-second samples.
+sysinfo = { version = "0.31", default-features = false, features = ["system", "user"] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# GPUI's macOS platform, with the display link paused while a window has nothing to draw, and with
+# the drags Mu hands to macOS (src/drag.rs) left to macOS rather than met with a replayed mouse move.
+# Drop it once the gpui-pre snapshot has both, zed-industries/zed#65472 or its like for the first.
+[patch.crates-io]
+gpui-pre-macos = { path = "crates/gpui-pre-macos" }
