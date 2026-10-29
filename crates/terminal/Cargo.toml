@@ -9,3 +9,6 @@ gpui-kit.workspace = true
 alacritty_terminal = "0.26"
 libc.workspace = true
 smol.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -10,7 +10,9 @@ use serde::Deserialize;
 
 use crate::{fs::Cancelled, settings::Settings};
 
-const THEMES: &str = include_str!("../assets/theme.json");
+/// The bundled themes, as written.
+static THEMES: LazyLock<serde_json::Value> =
+    LazyLock::new(|| serde_json::from_str(include_str!("../assets/theme.json")).expect("the bundled theme is valid"));
 
 const FONTS: [&[u8]; 4] = [
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
@@ -60,7 +62,7 @@ pub fn init(cx: &mut App) {
 pub fn apply(cx: &mut App) {
     let settings = Settings::get(cx);
     let tint = if settings.tint { Tint::Turned(settings.tint_turn) } else { Tint::Neutral };
-    let mut file: serde_json::Value = serde_json::from_str(THEMES).expect("the bundled theme is valid");
+    let mut file = THEMES.clone();
     recolor(&mut file, tint);
     let file: ThemeFile = serde_json::from_value(file).expect("the bundled theme is valid");
     let global = Theme::global_mut(cx);
@@ -100,18 +102,12 @@ pub fn turn_tint(hue: f32, save: bool, cx: &mut App) {
 
 /// The hue Monokai's background leans toward in its dark theme, or its light one.
 fn monokai_hue(dark: bool) -> f32 {
-    static HUES: LazyLock<[f32; 2]> = LazyLock::new(|| {
-        let file: serde_json::Value = serde_json::from_str(THEMES).expect("the bundled theme is valid");
-        let hue = |mode: &str| {
-            let themes = file["themes"].as_array().expect("the bundled theme is valid");
-            let theme = themes.iter().find(|theme| theme["mode"] == mode).expect("the bundled theme exists");
-            let hex = theme["colors"]["background"].as_str().and_then(|color| color.strip_prefix('#'));
-            let [_, a, b] = oklab(hex.and_then(|hex| u32::from_str_radix(hex, 16).ok()).expect("a valid color"));
-            b.atan2(a).to_degrees().rem_euclid(360.) as f32
-        };
-        [hue("dark"), hue("light")]
-    });
-    HUES[usize::from(!dark)]
+    let mode = if dark { "dark" } else { "light" };
+    let themes = THEMES["themes"].as_array().expect("the bundled theme is valid");
+    let theme = themes.iter().find(|theme| theme["mode"] == mode).expect("the bundled theme exists");
+    let hex = theme["colors"]["background"].as_str().and_then(|color| color.strip_prefix('#'));
+    let [_, a, b] = oklab(hex.and_then(|hex| u32::from_str_radix(hex, 16).ok()).expect("a valid color"));
+    b.atan2(a).to_degrees().rem_euclid(360.) as f32
 }
 
 /// How the theme's greys lean.
@@ -249,9 +245,8 @@ mod tests {
 
     #[test]
     fn unturned_tint_is_monokai_exactly() {
-        let monokai: serde_json::Value = serde_json::from_str(THEMES).unwrap();
-        let mut tinted = monokai.clone();
+        let mut tinted = THEMES.clone();
         recolor(&mut tinted, Tint::Turned(0.));
-        assert_eq!(tinted, monokai);
+        assert_eq!(tinted, *THEMES);
     }
 }

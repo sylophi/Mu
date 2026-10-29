@@ -3844,6 +3844,7 @@ dependencies = [
  "alacritty_terminal",
  "gpui-kit",
  "libc",
+ "serde_json",
  "smol",
 ]
 

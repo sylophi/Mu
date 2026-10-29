@@ -44,14 +44,16 @@ fn main() {
     });
 }
 
-/// The 16 colors in each "ansi" list of Mu's themes, the dark theme's first. The demo has no JSON
-/// parser, and these lists are all it needs that the theme registry doesn't read.
-fn ansi_colors(themes: &str) -> AnsiColors {
-    let mut lists = themes.split("\"ansi\"").skip(1).map(|rest| {
-        let list = &rest[..rest.find(']').expect("the list ends")];
-        let colors: Vec<Hsla> = list.split('"').filter_map(|text| Rgba::try_from(text).ok()).map(Into::into).collect();
+/// The 16 terminal colors of Mu's dark and light themes, which the theme registry doesn't read.
+fn ansi_colors(json: &str) -> AnsiColors {
+    let file: serde_json::Value = serde_json::from_str(json).expect("theme.json parses");
+    let themes = file["themes"].as_array().expect("a list of themes");
+    let ansi = |mode: &str| {
+        let theme = themes.iter().find(|theme| theme["mode"] == mode).expect("the theme exists");
+        let colors = theme["terminal"]["ansi"].as_array().expect("a list of colors").iter();
+        let colors: Vec<Hsla> =
+            colors.map(|hex| Rgba::try_from(hex.as_str().expect("a color")).expect("a valid color").into()).collect();
         colors.try_into().expect("16 colors")
-    });
-    let mut next = || lists.next().expect("a dark and a light theme");
-    AnsiColors { dark: next(), light: next() }
+    };
+    AnsiColors { dark: ansi("dark"), light: ansi("light") }
 }
