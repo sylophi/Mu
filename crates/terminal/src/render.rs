@@ -1,7 +1,7 @@
 //! Laying out and painting the grid: merged background rects, then one shaped
 //! line per run of same-styled cells, snapped to the cell grid.
 
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use alacritty_terminal::{
     grid::Dimensions as _,
@@ -373,6 +373,8 @@ impl TerminalView {
         let shaper = Shaper { text_system, font, font_size, cell_width };
         let palette = Palette::new(cx);
 
+        // Output parsed from here on wakes the view for another frame.
+        self.redraw_pending.store(false, Ordering::Release);
         let term = self.term.lock();
         let content = term.renderable_content();
         let cursor = content.cursor;
