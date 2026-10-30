@@ -63,11 +63,14 @@ pub(super) struct AfterLoad {
 /// A folder's items, sorted, and how Finder lays it out, if it does.
 type Listed = (io::Result<Vec<Entry>>, Option<Layout>);
 
-/// A folder got ready from a press that may be the start of what opens it, a click or a double
-/// click, so that it opens with its items, their icons and their pictures there. Like the folder
-/// shown, it's watched from when it's listed, so what changes until it opens isn't missed.
+/// A folder got ready to open, so that it opens with its items, their icons and their pictures
+/// there: the folder under the cursor, or one from a press that may be the start of what opens it,
+/// a click or a double click. Like the folder shown, it's watched from when it's listed, so what
+/// changes until it opens isn't missed.
 pub(super) struct Prefetch {
     path: PathBuf,
+    /// Got ready for the cursor, and let go of once it moves off, rather than for a press.
+    cursor: bool,
     changes: Changes,
     listing: Task<Listed>,
     _draw: Task<()>,
@@ -176,9 +179,32 @@ impl Browser {
         })
     }
 
+    /// Gets the folder at `path` ready to open from a press, in place of this one.
+    pub fn prefetch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.get_ready(path, false, window, cx);
+    }
+
+    /// Keeps the folder under the cursor ready to open, so ⌘↓ opens it as soon as a double click
+    /// does, and ⌘] goes forward as soon, to the folder ⌘[ came out of and put the cursor on.
+    pub(super) fn prefetch_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A press's goes first, until it's let go of.
+        if self.prefetch.as_ref().is_some_and(|prefetch| !prefetch.cursor) {
+            return;
+        }
+        // More than one opens in tabs instead.
+        let single = self.selection.len() == 1;
+        let Some(folder) = self.selected_cursor_entry().filter(|entry| entry.folder && single) else {
+            self.prefetch = None;
+            return;
+        };
+        if self.prefetch.as_ref().is_none_or(|prefetch| prefetch.path != folder.target()) {
+            self.get_ready(folder.target().to_path_buf(), true, window, cx);
+        }
+    }
+
     /// Gets the folder at `path` ready to open, in place of this one: watches and lists it, then
     /// draws the icons and pictures it opens with.
-    pub fn prefetch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn get_ready(&mut self, path: PathBuf, cursor: bool, window: &mut Window, cx: &mut Context<Self>) {
         if path == self.path {
             return;
         }
@@ -200,18 +226,32 @@ impl Browser {
             if let Ok(entries) = receiver.recv().await {
                 this.update_in(cx, |this, window, cx| this.draw_ahead(&entries, window, cx)).ok();
             }
-            // Let go of once a double click from the press is past, rather than kept watching and
-            // going stale until the next folder.
+            if cursor {
+                return;
+            }
+            // Once a double click from the press is past, it's the cursor's, kept only if it's the
+            // folder under it, rather than kept watching and going stale until the next folder.
             let double_click = Duration::from_secs_f64(NSEvent::doubleClickInterval());
             cx.background_executor().timer(double_click).await;
-            this.update(cx, |this, _| this.prefetch = None).ok();
+            this.update_in(cx, |this, window, cx| {
+                if let Some(prefetch) = &mut this.prefetch {
+                    prefetch.cursor = true;
+                }
+                this.prefetch_cursor(window, cx);
+            })
+            .ok();
         });
-        self.prefetch = Some(Prefetch { path, changes, listing, _draw: draw });
+        self.prefetch = Some(Prefetch { path, cursor, changes, listing, _draw: draw });
     }
 
     /// Starts drawing the icons and pictures of `entries`, so they show as soon as their folder does.
     fn draw_ahead(&mut self, entries: &[Entry], window: &mut Window, cx: &mut Context<Self>) {
         let (grid, scale) = (Settings::get(cx).grid, window.scale_factor());
+        if grid {
+            // Each folder the cursor stops on adds its pictures, which otherwise pile up until the
+            // next folder.
+            self.tiles.trim(Some(&self.path), Some(window), cx);
+        }
         for entry in entries {
             if grid {
                 icons::prefetch(entry, TILE_ICON, scale, cx);
@@ -225,6 +265,10 @@ impl Browser {
     /// Keeps up with the folder just gone to and lists it, taking what was got ready for it.
     pub(super) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (changes, listing) = match self.prefetch.take().filter(|prefetch| prefetch.path == self.path) {
+            // Listed again if it's changed since, rather than shown as it was.
+            Some(prefetch) if prefetch.changes.is_pending() => {
+                (prefetch.changes, self.list(self.path.clone(), window, cx))
+            }
             Some(prefetch) => (prefetch.changes, prefetch.listing),
             None => (watcher(&self.path, cx), self.list(self.path.clone(), window, cx)),
         };
@@ -348,6 +392,8 @@ impl Browser {
             // Newest and biggest first is what you usually want from those columns.
             listing.descending = matches!(key, SortKey::Modified | SortKey::Size);
         }
+        // Got ready sorted as it was, so it's got ready again.
+        self.prefetch = None;
         self.sort_entries(cx);
     }
 }

@@ -101,6 +101,11 @@ impl Browser {
         Some(&self.listing[self.cursor_ix()?])
     }
 
+    /// The item under the cursor, if it's selected.
+    pub(super) fn selected_cursor_entry(&self) -> Option<&Entry> {
+        self.cursor_entry().filter(|entry| self.selection.contains(&entry.name))
+    }
+
     /// Selected entries in display order.
     pub(super) fn selected_entries(&self) -> Vec<&Entry> {
         let mut ixs: Vec<usize> = self.selection.names.iter().filter_map(|name| self.listing.position(name)).collect();
@@ -181,10 +186,6 @@ impl Browser {
         self.focus_handle.focus(window, cx);
         let name = self.name_at(ix);
         let modifiers = event.modifiers;
-        // The first press of what may be a double click.
-        if event.click_count == 1 && !modifiers.shift && !modifiers.platform && self.listing[ix].folder {
-            self.prefetch(self.listing[ix].target().to_path_buf(), window, cx);
-        }
         if modifiers.platform && event.click_count == 2 {
             // ⌘-double-click opens a folder in a new tab, like Finder. The first click selected it.
             let entry = &self.listing[ix];
