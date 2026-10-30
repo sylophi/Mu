@@ -45,7 +45,7 @@ use actions::ShowSettings;
 use docks::Docks;
 use item::Item;
 use path_bar::PathEditor;
-use sidebar::DraggedFavorite;
+use sidebar::{DraggedFavorite, Sidebar};
 use status_bar::Meters;
 use tab_list::TabList;
 use tabs::{DraggedTab, TabDrag};
@@ -98,6 +98,7 @@ pub struct Workspace {
     last_folder: Option<Entity<Browser>>,
     docks: Docks,
     preview: Entity<Preview>,
+    sidebar: Entity<Sidebar>,
     meters: Entity<Meters>,
     palette: Option<(Entity<Palette>, Subscription)>,
     /// The permissions sheet shown at launch, polling while it's up.
@@ -157,6 +158,10 @@ impl Workspace {
             last_folder: None,
             preview: cx.new(|cx| Preview::new(docks.preview, cx)),
             docks,
+            sidebar: cx.new({
+                let workspace = cx.entity();
+                move |cx| Sidebar::new(&workspace, cx)
+            }),
             meters: cx.new(Meters::new),
             palette: None,
             onboarding: None,

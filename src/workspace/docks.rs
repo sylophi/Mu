@@ -79,7 +79,7 @@ impl Workspace {
                         .min_w(SIDEBAR_WIDTHS.start)
                         .border_r_1()
                         .border_color(border)
-                        .child(self.render_sidebar(cx))
+                        .child(self.sidebar.clone().cached(StyleRefinement::default().size_full()))
                         .child(self.render_dock_edge(Dock::Sidebar, cx)),
                 )
             })
