@@ -1,0 +1,47 @@
+GPUI's Metal renderer and CoreText text system, gpui-pre-apple 0.3.9 as published (a snapshot of
+Zed at 93d7456), with the change Mu needs until a gpui-pre snapshot has it:
+
+- Laying out a line uses the same CoreText font for a font at a size each time (`sized_fonts` in
+  `text_system.rs`). A font made anew for every line builds its glyph advances again, which took
+  longer than laying out the line itself.
+
+diff --git a/src/text_system.rs b/src/text_system.rs
+index 3c0e17d..3e66b95 100644
+--- a/src/text_system.rs
++++ b/src/text_system.rs
+@@ -77,6 +77,9 @@ struct AppleTextSystemState {
+     font_ids_by_postscript_name: HashMap<String, FontId>,
+     font_ids_by_font_key: HashMap<FontKey, SmallVec<[FontId; 4]>>,
+     postscript_names_by_font_id: HashMap<FontId, String>,
++    /// Each font at each size a line has been laid out in. Made anew for every line, a font builds
++    /// its glyph advances again, which costs more than laying out the line.
++    sized_fonts: HashMap<(FontId, u32), CTFont>,
+ }
+ 
+ impl AppleTextSystem {
+@@ -90,6 +93,7 @@ impl AppleTextSystem {
+             font_ids_by_postscript_name: HashMap::default(),
+             font_ids_by_font_key: HashMap::default(),
+             postscript_names_by_font_id: HashMap::default(),
++            sized_fonts: HashMap::default(),
+         }))
+     }
+ }
+@@ -569,12 +573,12 @@ impl AppleTextSystemState {
+                 } else {
+                     font_size
+                 };
++                let sized_font = self
++                    .sized_fonts
++                    .entry((run.font_id, f32::from(font_size).to_bits()))
++                    .or_insert_with(|| font.native_font().clone_with_font_size(font_size.into()));
+                 unsafe {
+-                    string.set_attribute(
+-                        cf_range,
+-                        kCTFontAttributeName,
+-                        &font.native_font().clone_with_font_size(font_size.into()),
+-                    );
++                    string.set_attribute(cf_range, kCTFontAttributeName, &*sized_font);
+                 }
+                 break_ligature = !break_ligature;
+             }

@@ -263,7 +263,9 @@ impl Workspace {
     /// follows its title.
     fn update_title(&self, window: &mut Window, cx: &App) {
         let title = self.active_item().map(|item| item.title(cx)).unwrap_or_else(|| "Mu".into());
-        window.set_window_title(&title);
+        // AppKit takes a millisecond or more to set a title, so it's set the frame after the change
+        // draws, rather than before.
+        window.on_next_frame(move |window, _| window.on_next_frame(move |window, _| window.set_window_title(&title)));
         self.tabs_scroll.scroll_to_item(self.items.active());
     }
 
@@ -276,6 +278,13 @@ impl Workspace {
         let ix = self.position(browser.entity_id())?;
         self.activate(ix, window, cx);
         Some(browser)
+    }
+
+    /// Gets the folder at `path` ready for `show_folder`.
+    pub(super) fn prefetch(&self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(browser) = self.active_folder().or(self.last_folder.as_ref()) {
+            browser.update(cx, |browser, cx| browser.prefetch(path, window, cx));
+        }
     }
 
     /// Shows a folder's contents.

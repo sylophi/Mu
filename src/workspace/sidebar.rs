@@ -35,6 +35,27 @@ use crate::{
     theme::Toasts as _,
 };
 
+/// The sidebar, drawn again when the workspace changes, rather than on every frame the folder view
+/// draws.
+pub(super) struct Sidebar {
+    workspace: WeakEntity<Workspace>,
+    _observe: Subscription,
+}
+
+impl Sidebar {
+    pub(super) fn new(workspace: &Entity<Workspace>, cx: &mut Context<Self>) -> Self {
+        Self { workspace: workspace.downgrade(), _observe: cx.observe(workspace, |_, _, cx| cx.notify()) }
+    }
+}
+
+impl Render for Sidebar {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.workspace
+            .update(cx, |workspace, cx| workspace.render_sidebar(cx).into_any_element())
+            .unwrap_or_else(|_| Empty.into_any_element())
+    }
+}
+
 /// What a sidebar entry is.
 #[derive(Clone, Copy, PartialEq)]
 enum Place {
@@ -193,7 +214,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.last_folder.as_ref().map(|browser| browser.read(cx).path().to_path_buf());
         let [favorites, icloud, locations] = self.places(cx);
         let section = |title: &'static str, items: Vec<(SharedString, PathBuf, Place)>, cx: &mut Context<Self>| {

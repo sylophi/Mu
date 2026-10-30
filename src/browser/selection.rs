@@ -79,10 +79,9 @@ impl Selection {
 
     /// Lets go of what `listing` doesn't show, the cursor and the anchor too.
     pub(super) fn keep_to(&mut self, listing: &Listing) {
-        let shown: HashSet<&str> = listing.iter().map(|e| e.name.as_ref()).collect();
-        self.names.retain(|name| shown.contains(name.as_ref()));
+        self.names.retain(|name| listing.position(name).is_some());
         for slot in [&mut self.cursor, &mut self.anchor] {
-            if slot.as_ref().is_some_and(|name| !shown.contains(name.as_ref())) {
+            if slot.as_ref().is_some_and(|name| listing.position(name).is_none()) {
                 *slot = None;
             }
         }
@@ -104,7 +103,9 @@ impl Browser {
 
     /// Selected entries in display order.
     pub(super) fn selected_entries(&self) -> Vec<&Entry> {
-        self.listing.iter().filter(|e| self.selection.contains(&e.name)).collect()
+        let mut ixs: Vec<usize> = self.selection.names.iter().filter_map(|name| self.listing.position(name)).collect();
+        ixs.sort_unstable();
+        ixs.into_iter().map(|ix| &self.listing[ix]).collect()
     }
 
     pub fn selected_paths(&self) -> Vec<PathBuf> {
@@ -180,6 +181,10 @@ impl Browser {
         self.focus_handle.focus(window, cx);
         let name = self.name_at(ix);
         let modifiers = event.modifiers;
+        // The first press of what may be a double click.
+        if event.click_count == 1 && !modifiers.shift && !modifiers.platform && self.listing[ix].folder {
+            self.prefetch(self.listing[ix].target().to_path_buf(), window, cx);
+        }
         if modifiers.platform && event.click_count == 2 {
             // ⌘-double-click opens a folder in a new tab, like Finder. The first click selected it.
             let entry = &self.listing[ix];

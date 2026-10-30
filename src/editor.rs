@@ -54,10 +54,7 @@ impl FileEditor {
                 }
                 cx.notify();
             }),
-            cx.observe(&state, |_, _, cx| {
-                cx.notify();
-                cx.emit(TabEvent::Changed);
-            }),
+            cx.observe(&state, |_, _, cx| cx.notify()),
         ];
         let load = cx.background_spawn({
             let path = path.clone();

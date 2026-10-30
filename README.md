@@ -69,14 +69,14 @@ The rest are in the menus and the command palette.
 ## Building
 
 ```sh
-cargo run       # runs Mu
+make run        # runs Mu
 make app        # builds dist/Mu.app
 ```
 
-It needs Rust and Xcode.
+It needs Rust and Xcode. `make` also applies Mu's patches to GPUI (`patches/`) before it builds, so a plain `cargo` command needs a `make patched` first.
 
 ## License
 
-Mu is under the [MIT License](LICENSE). It's made with [GPUI](https://www.gpui.rs), Zed's UI framework, through [GPUI Kit](https://github.com/longbridge/gpui-kit), and `crates/gpui-pre-macos` is GPUI's macOS platform from [Zed](https://github.com/zed-industries/zed), under the Apache License 2.0.
+Mu is under the [MIT License](LICENSE). It's made with [GPUI](https://www.gpui.rs), Zed's UI framework, through [GPUI Kit](https://github.com/longbridge/gpui-kit), and the patches in `patches/` change GPUI crates from [Zed](https://github.com/zed-industries/zed), so they're under the Apache License 2.0, as those crates are.
 
 The colors are from [Zedokai](https://github.com/slymax/zedokai) by slymax. The bundled fonts are [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (SIL Open Font License) and the Symbols Nerd Font from [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) (MIT), with their licenses in `assets/fonts`.

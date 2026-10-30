@@ -55,9 +55,21 @@ pub fn item(path: &Path, is_dir: bool, size: Pixels) -> Img {
 
 /// The icon for `entry`, `size` big, with the badge Finder puts on it.
 pub fn entry(entry: &Entry, size: Pixels) -> Div {
+    let (own, generic) = icons_of(entry);
+    badged(icon(own, generic, size), entry, size)
+}
+
+/// Starts drawing the icon `entry` shows, `size` big at `scale`, before it shows, like in a folder
+/// that's about to open.
+pub fn prefetch(entry: &Entry, size: Pixels, scale: f32, cx: &mut App) {
+    let (own, generic) = icons_of(entry);
+    get((own.unwrap_or(generic), side(size, scale)), None, cx);
+}
+
+/// The icon of its own `entry` shows, if macOS draws it one, and the one for its kind.
+fn icons_of(entry: &Entry) -> (Option<Of>, Of) {
     let (path, program) = (entry.target(), entry.category == Category::Executable);
-    let own = draws_own(entry).then(|| Of::Path(path.to_path_buf()));
-    badged(icon(own, generic(path, entry.folder, program), size), entry, size)
+    (draws_own(entry).then(|| Of::Path(path.to_path_buf())), generic(path, entry.folder, program))
 }
 
 /// `picture` of `entry`, with the badge for a link or a locked item on its bottom left corner,
@@ -99,11 +111,16 @@ fn generic(path: &Path, is_dir: bool, program: bool) -> Of {
 /// The icon for `generic`, `size` big, until the one for `own` is drawn, if there is an `own`.
 fn icon(own: Option<Of>, generic: Of, size: Pixels) -> Img {
     let draw = move |window: &mut Window, cx: &mut App| {
-        let side = (f32::from(size) * window.scale_factor()).round() as u32;
-        let mut icon = |of: &Of| get((of.clone(), side), window, cx);
+        let (side, view) = (side(size, window.scale_factor()), window.current_view());
+        let mut icon = |of: &Of| get((of.clone(), side), Some(view), cx);
         own.as_ref().and_then(&mut icon).or_else(|| icon(&generic)).map(Ok)
     };
     img(ImageSource::Custom(Arc::new(draw))).size(size).flex_none()
+}
+
+/// An icon's side in device pixels, for `size` at `scale`.
+fn side(size: Pixels, scale: f32) -> u32 {
+    (f32::from(size) * scale).round() as u32
 }
 
 /// Mu's logo, `size` big: the μ of its app icon, in the theme's colors.
@@ -133,7 +150,8 @@ impl Global for Icons {}
 
 /// The icon for `key`. Until it's drawn that size, it's the one drawn nearest that size, so a thing
 /// already showing somewhere doesn't show as something else first. None when it's not drawn at all.
-fn get(key: (Of, u32), window: &Window, cx: &mut App) -> Option<Arc<RenderImage>> {
+/// `view` is notified once it's drawn.
+fn get(key: (Of, u32), view: Option<EntityId>, cx: &mut App) -> Option<Arc<RenderImage>> {
     let icons = cx.default_global::<Icons>();
     let (of, side) = &key;
     let sides = icons.drawn.get(of);
@@ -143,11 +161,7 @@ fn get(key: (Of, u32), window: &Window, cx: &mut App) -> Option<Arc<RenderImage>
     // A bigger one shrinks better than a smaller one grows.
     let nearest =
         sides.and_then(|sides| sides.range(side..).chain(sides.range(..side).rev()).find_map(|(_, icon)| icon.clone()));
-    let first = !icons.drawing.contains_key(&key);
-    icons.drawing.entry(key.clone()).or_default().insert(window.current_view());
-    if first {
-        draw_later(key, cx);
-    }
+    start_drawing(key, view, cx);
     nearest
 }
 
@@ -161,10 +175,18 @@ pub fn refresh(paths: &[PathBuf], cx: &mut App) {
         .iter()
         .filter(|(of, _)| matches!(of, Of::Path(path) if paths.contains(path)))
         .flat_map(|(of, sides)| sides.keys().map(|side| (of.clone(), *side)))
-        .filter(|key| !icons.drawing.contains_key(key))
         .collect();
     for key in stale {
-        cx.global_mut::<Icons>().drawing.insert(key.clone(), HashSet::new());
+        start_drawing(key, None, cx);
+    }
+}
+
+/// Draws `key`'s icon, unless it's being drawn already, and notifies `view` once it is.
+fn start_drawing(key: (Of, u32), view: Option<EntityId>, cx: &mut App) {
+    let drawing = &mut cx.default_global::<Icons>().drawing;
+    let first = !drawing.contains_key(&key);
+    drawing.entry(key.clone()).or_default().extend(view);
+    if first {
         draw_later(key, cx);
     }
 }

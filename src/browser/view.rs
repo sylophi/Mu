@@ -34,7 +34,7 @@ pub(super) const TILE_ICON: Pixels = px(56.);
 const TILE_PADDING: Pixels = px(4.);
 /// The cloud mark after a name, and the gap before it.
 const CLOUD_MARK: Pixels = px(14.);
-const ROW_ICON: Pixels = px(16.);
+pub(super) const ROW_ICON: Pixels = px(16.);
 pub(super) const HEADER_HEIGHT: Pixels = px(24.);
 /// The least a list column can be dragged down to.
 const MIN_COLUMN_WIDTH: Pixels = px(40.);
@@ -108,8 +108,22 @@ impl Browser {
     /// Items per row: as many tiles as fit in the grid, one in the list and a layout.
     pub(super) fn columns(&self, cx: &App) -> usize {
         match self.mode(cx) {
-            Mode::Grid => (self.width / CELL_WIDTH).floor().max(1.) as usize,
+            Mode::Grid => self.grid_columns(),
             Mode::List | Mode::Layout(_) => 1,
+        }
+    }
+
+    /// How many tiles fit across the grid.
+    fn grid_columns(&self) -> usize {
+        (self.width / CELL_WIDTH).floor().max(1.) as usize
+    }
+
+    /// How many items a list, or a grid, this big shows from its top.
+    pub(super) fn screenful(&self, grid: bool) -> usize {
+        let height = self.scroll_handle().bounds().size.height;
+        match grid {
+            true => self.grid_columns() * (height / CELL_HEIGHT).ceil() as usize,
+            false => (height / ROW_HEIGHT).ceil() as usize,
         }
     }
 

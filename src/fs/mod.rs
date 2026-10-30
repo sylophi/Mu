@@ -23,7 +23,7 @@ use objc2_foundation::{NSString, NSURL};
 pub use apps::{apps_to_open, bookmark_target, is_plain_text, open_with};
 pub use archives::{compress, extract, replacement_folder};
 pub use kinds::{Category, extension, is_archive, is_disk_image, is_package, read_text};
-pub use listing::{Entry, SF_DATALESS, Shared, Usage, list_dir, list_usage, watch};
+pub use listing::{Changes, Entry, SF_DATALESS, Shared, Usage, list_dir, list_usage, watch};
 pub use merge::{Choice, Choices, Clash, clashes, copy_into, move_into};
 pub use names::{
     count, display_name, format_date, format_size, home_dir, icloud_drive, natural_cmp, shown_path, trash_dir,

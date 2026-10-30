@@ -1,0 +1,35 @@
+GPUI, gpui-pre 0.3.9 as published (a snapshot of Zed at 93d7456), with the change Mu needs until a
+gpui-pre snapshot has it:
+
+- A window that changes between the mouse and the keyboard draws all of itself again after the
+  event that changes it, not before (`modality_changed` in `window.rs`). A key press into a window
+  that needs drawing draws it before it's dispatched, so the first key press after the mouse drew
+  the whole window twice.
+
+diff --git a/src/window.rs b/src/window.rs
+index 1214b03..293c97d 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -5604,9 +5604,9 @@ impl Window {
+             PlatformInput::Touch(_) => InputModality::Touch,
+             _ => self.last_input_modality,
+         };
+-        if self.last_input_modality != old_modality {
+-            self.refresh();
+-        }
++        // Refreshed after the event's dispatched, not before, since a key press dispatched into a
++        // window that needs drawing draws it first, and so a key press after the mouse drew twice.
++        let modality_changed = self.last_input_modality != old_modality;
+ 
+         // Handlers may set this to false by calling `stop_propagation`.
+         cx.propagate_event = true;
+@@ -5731,6 +5731,9 @@ impl Window {
+         } else if let Some(touch_event) = event.touch_event() {
+             self.dispatch_touch_event(touch_event, cx);
+         }
++        if modality_changed {
++            self.refresh();
++        }
+         if let PlatformInput::LongPress(long_press) = &event {
+             match long_press.phase {
+                 crate::TouchPhase::Started if !self.default_prevented => {

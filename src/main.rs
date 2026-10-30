@@ -65,6 +65,7 @@ fn main() -> ExitCode {
         mu_terminal::init(cx);
         browser::init(cx);
         editor::init(cx);
+        palette::init(cx);
         workspace::init(cx);
         update::init(cx);
         cx.on_window_closed(|cx, _| {
