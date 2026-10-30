@@ -77,3 +77,4 @@ codegen-units = 1
 [patch.crates-io]
 gpui-pre-macos = { path = "patched/gpui-pre-macos" }
 gpui-pre-apple = { path = "patched/gpui-pre-apple" }
+gpui-pre = { path = "patched/gpui-pre" }
