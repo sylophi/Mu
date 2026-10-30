@@ -47,7 +47,7 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
 
       - name: Test
-        run: cargo test --workspace
+        run: make test
 
       # Missing secrets fail the release here, rather than letting it ship an
       # app Gatekeeper won't open.

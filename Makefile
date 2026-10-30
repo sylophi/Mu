@@ -4,9 +4,9 @@ VERSION ?= $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 # Signed ad hoc, unless given a Developer ID, as a release is.
 DEVELOPER_ID ?= -
 
-.PHONY: app release icon run test clean
+.PHONY: app release icon run test patched clean
 
-app:
+app: patched
 	cargo build --release
 	rm -rf $(APP)
 	mkdir -p $(APP)/Contents/MacOS $(APP)/Contents/Resources
@@ -41,12 +41,15 @@ icon:
 		--platform macOS --rendition Default --width 206 --height 206 --scale 1
 	sips --padToHeightWidth 256 256 assets/icon.png >/dev/null
 
-run:
+run: patched
 	cargo run
 
-test:
+test: patched
 	cargo test --workspace
+
+patched:
+	patches/apply.sh
 
 clean:
 	cargo clean
-	rm -rf dist
+	rm -rf dist patched

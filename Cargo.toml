@@ -72,8 +72,7 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 
-# GPUI's macOS platform, with the display link paused while a window has nothing to draw, and with
-# the drags Mu hands to macOS (src/drag.rs) left to macOS rather than met with a replayed mouse move.
-# Drop it once the gpui-pre snapshot has both, zed-industries/zed#65472 or its like for the first.
+# GPUI's crates with the changes Mu needs until a gpui-pre snapshot has them, each a patch in
+# patches/ that goes into what it changes and why. `make` applies them before it builds.
 [patch.crates-io]
-gpui-pre-macos = { path = "crates/gpui-pre-macos" }
+gpui-pre-macos = { path = "patched/gpui-pre-macos" }

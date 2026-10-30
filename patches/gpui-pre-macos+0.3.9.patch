@@ -1,0 +1,167 @@
+GPUI's macOS platform, gpui-pre-macos 0.3.9 as published (a snapshot of Zed at 93d7456), with the
+changes Mu needs until a gpui-pre snapshot has them (zed-industries/zed#65472 or its like for the
+first):
+
+- A window's display link pauses once nothing has asked for a frame for 100 ms, so an idle window
+  doesn't wake the main thread on every refresh of the display. GPUI's `frame_waker` and
+  `schedule_frame` start it again (`window.rs`, with `request_frame_now` in `display_link.rs`).
+- A drag Mu hands to macOS, like files dragged out to another app, stops the last mouse move being
+  replayed once it begins (`draggingSession:willBeginAtPoint:` in `window.rs`).
+- Its deprecation warnings are allowed, as Zed's workspace allows them and the published manifest
+  leaves that out (`Cargo.toml`). Cargo shows a patched crate's warnings, unlike a crates.io one's.
+
+diff --git a/Cargo.toml b/Cargo.toml
+index 0e1322a..44ae6bf 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -305,3 +305,7 @@ priority = -1
+ [lints.rust.unexpected_cfgs]
+ level = "allow"
+ priority = 0
++
++# Zed's workspace allows these, and the published manifest leaves its lints out.
++[lints.rust]
++deprecated = "allow"
+diff --git a/src/display_link.rs b/src/display_link.rs
+index 81b1b5e..641fcee 100644
+--- a/src/display_link.rs
++++ b/src/display_link.rs
+@@ -1,3 +1,4 @@
++// Mu changes this file from gpui-pre-macos 0.3.9, as the crate's README describes.
+ //! Frame pacing for macOS windows, built on `CVDisplayLink`.
+ //!
+ //! CVDisplayLink has no safe teardown: `CVDisplayLinkStop` merely flags the
+@@ -333,6 +334,11 @@ impl WindowFrameSource {
+         Ok(())
+     }
+ 
++    /// Asks for a frame right away, without waiting for the display.
++    pub fn request_frame_now(&self) {
++        self.frame_requests.merge_data(1);
++    }
++
+     pub fn take_signal(&self) -> Option<(Instant, FrameRequestSource)> {
+         self.signal.take()
+     }
+diff --git a/src/window.rs b/src/window.rs
+index b042825..8ea7d4e 100644
+--- a/src/window.rs
++++ b/src/window.rs
+@@ -1,3 +1,4 @@
++// Mu changes this file from gpui-pre-macos 0.3.9, as the crate's README describes.
+ use crate::{
+     BoolExt, MacDisplay, NSRange, NSStringExt, TISCopyCurrentKeyboardInputSource,
+     TISGetInputSourceProperty, WindowFrameSource, events::platform_input_from_native,
+@@ -78,11 +79,16 @@ use std::{
+         Arc, Once, Weak,
+         atomic::{AtomicBool, Ordering},
+     },
+-    time::Duration,
++    time::{Duration, Instant},
+ };
+ 
+ const WINDOW_STATE_IVAR: &str = "windowState";
+ 
++/// How long a window's display link keeps running after GPUI last asked for a frame. An idle window's
++/// link would otherwise wake the main thread on every refresh of the display, for nothing. It paces
++/// animation and scrolling, which ask for frames all along, while a lone frame is drawn right away.
++const DISPLAY_LINK_IDLE_AFTER: Duration = Duration::from_millis(100);
++
+ static RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT: Once = Once::new();
+ 
+ static mut WINDOW_CLASS: *const Class = ptr::null();
+@@ -514,6 +520,10 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
+             dragging_session_source_operation_mask
+                 as extern "C" fn(&Object, Sel, id, NSInteger) -> NSDragOperation,
+         );
++        decl.add_method(
++            sel!(draggingSession:willBeginAtPoint:),
++            dragging_session_will_begin as extern "C" fn(&Object, Sel, id, NSPoint),
++        );
+         decl.add_method(
+             sel!(draggingSession:endedAtPoint:operation:),
+             dragging_session_ended as extern "C" fn(&Object, Sel, id, NSPoint, NSDragOperation),
+@@ -712,9 +722,24 @@ struct MacWindowState {
+     accesskit_adapter: Option<accesskit_macos::SubclassingAdapter>,
+     // The parent window if this window is a sheet (Dialog kind)
+     sheet_parent: Option<id>,
++    // When GPUI last asked for a frame, and whether the display link is paused for want of one.
++    frame_requested_at: Instant,
++    display_link_idle: bool,
+ }
+ 
+ impl MacWindowState {
++    /// Keeps the display link running, starting it again if it was paused for being idle.
++    fn request_frames(&mut self) {
++        self.frame_requested_at = Instant::now();
++        if mem::take(&mut self.display_link_idle) {
++            self.start_display_link();
++            // A link starting up takes a refresh or two to call back, so this frame is drawn now.
++            if let Some(frame_source) = &self.frame_source {
++                frame_source.request_frame_now();
++            }
++        }
++    }
++
+     fn move_traffic_light(&mut self) {
+         if let Some(traffic_light_position) = self.traffic_light_position {
+             if self.is_fullscreen() && !self.is_exiting_fullscreen {
+@@ -1148,6 +1173,8 @@ impl MacWindow {
+                 closed: Arc::new(AtomicBool::new(false)),
+                 accesskit_adapter: None,
+                 sheet_parent: None,
++                frame_requested_at: Instant::now(),
++                display_link_idle: false,
+             }));
+             let mut window = Self(state, marker);
+ 
+@@ -2022,6 +2049,20 @@ impl PlatformWindow for MacWindow {
+         self.0.as_ref().lock().request_frame_callback = Some(callback);
+     }
+ 
++    // GPUI calls these when it wants a frame, which is how a paused display link learns to start.
++    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
++        let window_state = Arc::downgrade(&self.0);
++        Some(Rc::new(move || {
++            if let Some(window_state) = window_state.upgrade() {
++                window_state.lock().request_frames();
++            }
++        }))
++    }
++
++    fn schedule_frame(&self) {
++        self.0.lock().request_frames();
++    }
++
+     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
+         self.0.as_ref().lock().event_callback = Some(callback);
+     }
+@@ -3359,7 +3400,12 @@ extern "C" fn step(view: *mut c_void) {
+             signal_source,
+             ..Default::default()
+         });
+-        window_state.lock().request_frame_callback = Some(callback);
++        let mut lock = window_state.lock();
++        lock.request_frame_callback = Some(callback);
++        if lock.frame_requested_at.elapsed() >= DISPLAY_LINK_IDLE_AFTER {
++            lock.display_link_idle = true;
++            lock.stop_display_link();
++        }
+     }
+ }
+ 
+@@ -3680,6 +3726,14 @@ extern "C" fn dragging_session_source_operation_mask(
+     operation
+ }
+ 
++// A drag session that the app starts itself takes the mouse from here on, so the last drag event
++// stops being replayed, as `start_external_drag` makes it.
++extern "C" fn dragging_session_will_begin(this: &Object, _: Sel, _: id, _: NSPoint) {
++    // SAFETY: as in `dragging_session_ended`.
++    let window_state = unsafe { get_window_state(this) };
++    window_state.lock().synthetic_drag_counter += 1;
++}
++
+ extern "C" fn dragging_session_ended(
+     this: &Object,
+     _: Sel,
