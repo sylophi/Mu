@@ -12,7 +12,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use gpui_kit::SharedString;
+use gpui_kit::{BackgroundExecutor, SharedString};
 use notify::Watcher as _;
 
 use super::{Category, alias_target, describe, extension, is_package};
@@ -276,29 +276,48 @@ impl<'a> Record<'a> {
     }
 }
 
-/// Watches `dir` (not its subfolders) until the watcher drops. A change waits `settle` for the rest
-/// of its burst, like a download writing or a big copy landing, so they come together.
-pub fn watch(dir: &Path, settle: Duration) -> (Option<notify::RecommendedWatcher>, Changes) {
+/// Watches `dir` (not its subfolders) from now until the changes drop. A change waits `settle` for
+/// the rest of its burst, like a download writing or a big copy landing, so they come together. A
+/// watcher takes milliseconds to start, so it starts and stops in the background.
+pub fn watch(dir: &Path, settle: Duration, executor: &BackgroundExecutor) -> Changes {
+    let since = SystemTime::now();
     let (tx, rx) = smol::channel::unbounded();
-    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-        if let Ok(event) = event
-            && !event.kind.is_access()
-        {
-            tx.send_blocking(event.paths).ok();
-        }
-    })
-    .and_then(|mut watcher| {
-        watcher.watch(dir, notify::RecursiveMode::NonRecursive)?;
-        Ok(watcher)
-    })
-    .ok();
-    (watcher, Changes { rx, settle })
+    let (stop, stopped) = smol::channel::bounded::<()>(1);
+    let dir = dir.to_owned();
+    executor
+        .spawn(async move {
+            let started = tx.clone();
+            let _watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                if let Ok(event) = event
+                    && !event.kind.is_access()
+                {
+                    tx.send_blocking(event.paths).ok();
+                }
+            })
+            .and_then(|mut watcher| {
+                watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
+                Ok(watcher)
+            });
+            // Items added, removed or renamed while the watcher started went unseen, so they count as
+            // a change. Some file systems keep times to the second, or to two.
+            if fs::metadata(&dir)
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified + Duration::from_secs(2) >= since)
+            {
+                started.send(Vec::new()).await.ok();
+            }
+            stopped.recv().await.ok();
+        })
+        .detach();
+    Changes { rx, settle, _stop: stop }
 }
 
 /// What changes in a folder `watch`es.
 pub struct Changes {
     rx: smol::channel::Receiver<Vec<PathBuf>>,
     settle: Duration,
+    /// Stops the watcher as it drops.
+    _stop: smol::channel::Sender<()>,
 }
 
 impl Changes {

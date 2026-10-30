@@ -169,7 +169,6 @@ pub struct Browser {
     layout: Option<Layout>,
     /// Where each visible item's icon is centered in the layout.
     spots: Vec<Point<Pixels>>,
-    _watcher: Option<notify::RecommendedWatcher>,
     _load: Task<()>,
     _watch: Task<()>,
     _settings: Subscription,
@@ -209,7 +208,6 @@ impl Browser {
             tiles: Cache::framed(TILE_ICON),
             layout: None,
             spots: Vec::new(),
-            _watcher: None,
             _load: Task::ready(()),
             _watch: Task::ready(()),
             _settings: cx.observe_global::<Settings>(|this, cx| this.update_visible(cx)),

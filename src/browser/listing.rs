@@ -144,8 +144,7 @@ impl Browser {
     }
 
     pub(super) fn watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (watcher, changes) = fs::watch(&self.path, Duration::from_millis(120));
-        self._watcher = watcher;
+        let changes = fs::watch(&self.path, Duration::from_millis(120), cx.background_executor());
         self._watch = cx.spawn_in(window, async move |this, cx| {
             while let Some(changed) = changes.next().await {
                 let update = this.update_in(cx, |this, window, cx| {
