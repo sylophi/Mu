@@ -102,17 +102,22 @@ impl Cache {
     }
 
     /// Lets go of all but the pictures asked for last, as the view moves on from the files it
-    /// showed, so going back to them shows them right away.
-    pub fn trim(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+    /// showed, so going back to them shows them right away. Those in the folder `showing` next
+    /// are kept first, as the view that showed others asks for those again as it's left.
+    pub fn trim(&mut self, showing: Option<&Path>, mut window: Option<&mut Window>, cx: &mut App) {
         let keep = (ROOM / f32::from(self.size)).powi(2) as usize;
         let over = self.pictures.len().saturating_sub(keep);
         if over == 0 {
             return;
         }
-        let mut asked: Vec<u64> = self.pictures.values().map(|picture| picture.asked).collect();
-        // All but the `over` asked for longest ago.
-        let kept = *asked.select_nth_unstable(over).1;
-        let old = self.pictures.extract_if(|_, picture| picture.asked < kept);
+        let rank = |path: &Path, picture: &Picture| match showing.is_some_and(|dir| path.parent() == Some(dir)) {
+            true => u64::MAX,
+            false => picture.asked,
+        };
+        let mut ranks: Vec<u64> = self.pictures.iter().map(|(path, picture)| rank(path, picture)).collect();
+        // All but the `over` ranked lowest.
+        let kept = *ranks.select_nth_unstable(over).1;
+        let old = self.pictures.extract_if(|path, picture| rank(path, picture) < kept);
         for picture in old.filter_map(|(_, picture)| picture.image) {
             cx.drop_image(picture, window.as_deref_mut());
         }
