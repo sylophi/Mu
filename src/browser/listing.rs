@@ -293,6 +293,8 @@ impl Browser {
     }
 
     fn apply_listing(&mut self, (listed, layout): Listed, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "bench")]
+        crate::bench::landed();
         self.loading = false;
         // Each load draws the picture again, and the GPU keeps the last one until it's let go of.
         if let Some(old) = std::mem::replace(&mut self.layout, layout) {

@@ -4,7 +4,7 @@ VERSION ?= $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 # Signed ad hoc, unless given a Developer ID, as a release is.
 DEVELOPER_ID ?= -
 
-.PHONY: app release icon run test patched clean
+.PHONY: app release icon run test bench patched clean
 
 app: patched
 	cargo build --release
@@ -46,6 +46,12 @@ run: patched
 
 test: patched
 	cargo test --workspace
+
+# Times how soon what Mu's asked for is on screen, as CI does. Mu's window floats in front for a
+# minute or so for each round.
+bench: patched
+	cargo build --release --features bench
+	bench/run.py target/release/mu
 
 patched:
 	patches/apply.sh

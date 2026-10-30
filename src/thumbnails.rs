@@ -86,6 +86,8 @@ impl Cache {
             let picture = picture.await;
             view.update(cx, |view, cx| match cache(view).pictures.get_mut(&path) {
                 Some(slot) if slot.made == modified => {
+                    #[cfg(feature = "bench")]
+                    crate::bench::landed();
                     slot.image = picture;
                     cx.notify();
                 }

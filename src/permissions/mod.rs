@@ -150,7 +150,8 @@ impl Permissions {
     /// Keeps them refreshing for the sheet that asks for them, the first time it's asked for while a
     /// required one is off.
     pub fn onboard(&mut self) -> Option<Watch> {
-        if !self.checked() || self.missing() == 0 || self.onboarded {
+        // The bench's window has to stay clear.
+        if !self.checked() || self.missing() == 0 || self.onboarded || cfg!(feature = "bench") {
             return None;
         }
         self.onboarded = true;

@@ -200,6 +200,10 @@ fn draw_later(key: (Of, u32), cx: &mut App) {
         cx.update(|cx| {
             let icons = cx.global_mut::<Icons>();
             let waiting = icons.drawing.remove(&key).unwrap_or_default();
+            #[cfg(feature = "bench")]
+            if !waiting.is_empty() {
+                crate::bench::landed();
+            }
             let (of, side) = key;
             let before = icons.drawn.entry(of).or_default().insert(side, icon.clone());
             for view in waiting {

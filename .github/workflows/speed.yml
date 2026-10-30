@@ -1,0 +1,88 @@
+# Times how soon what Mu's asked for is on screen (bench/run.py), and fails a change that takes any
+# of it over its target, or makes it slower than the branch the change goes into.
+name: Speed
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  speed:
+    # macOS 27 on Apple silicon, as Mu needs.
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # GPUI compiles its Metal shaders as it builds, and Xcode only has the
+      # Metal toolchain once it's asked for.
+      - name: Install the Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      # The build so far, with the patched GPUI crates that take longest, which rust-cache would leave
+      # out. Their sources are kept too, as patching them anew would make them look changed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            patched
+            target
+          key: cargo-${{ hashFiles('Cargo.lock', 'patches/*') }}
+
+      # Kept from main's own run, below.
+      - name: Get the base
+        id: base
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mu-base
+          key: mu-bench-${{ github.event.pull_request.base.sha }}
+
+      - name: Build the base
+        if: github.event_name == 'pull_request' && steps.base.outputs.cache-hit != 'true'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.sha }}
+        run: |
+          git checkout --quiet --detach "$BASE"
+          # Before the bench was added, there's nothing to compare with.
+          if grep -q '^bench = ' Cargo.toml; then
+            make patched
+            cargo build --release --features bench
+            cp target/release/mu "$RUNNER_TEMP/mu-base"
+          fi
+          git checkout --quiet --detach "$HEAD"
+
+      - name: Build
+        run: |
+          make patched
+          cargo build --release --features bench
+
+      - name: Time
+        run: |
+          if [ -f "$RUNNER_TEMP/mu-base" ]; then
+            bench/run.py --rounds 5 --base "$RUNNER_TEMP/mu-base" target/release/mu
+          else
+            bench/run.py --rounds 5 target/release/mu
+          fi
+
+      # For the changes going into main to compare with.
+      - name: Keep the build
+        if: github.event_name == 'push' && !cancelled()
+        run: cp target/release/mu "$RUNNER_TEMP/mu-base"
+      - if: github.event_name == 'push' && !cancelled()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mu-base
+          key: mu-bench-${{ github.sha }}
