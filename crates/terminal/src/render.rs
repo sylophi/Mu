@@ -1,5 +1,6 @@
 //! Laying out and painting the grid: merged background rects, then one shaped
-//! line per run of same-styled cells, snapped to the cell grid.
+//! line per run of cells that meet on a row, in a run of text for each style,
+//! snapped to the cell grid.
 
 use std::sync::{Arc, atomic::Ordering};
 
@@ -129,22 +130,69 @@ impl Style {
     fn lined(&self) -> bool {
         self.underline || self.strikethrough
     }
+
+    fn unlined(self) -> Self {
+        Self { underline: false, strikethrough: false, ..self }
+    }
 }
 
-struct Batch {
+/// Cells on a row with at most a space between them, shaped together, so a row in many colors is
+/// laid out and painted as one line. A wider gap, like a TUI's padding, starts another line, so its
+/// spaces are neither shaped nor painted.
+struct Line {
     row: usize,
     column: usize,
-    /// The column after the last cell in the run.
+    /// The column after the last cell.
     end: usize,
+    /// Whether a space follows, which goes in only once a cell that draws comes after it.
+    space: bool,
     text: String,
-    style: Style,
-    /// A wide glyph spans two cells and gets a run of its own.
+    /// The length of the text in each style, in order.
+    runs: Vec<(usize, Style)>,
+    /// A wide glyph spans two cells and gets a line of its own.
     wide: bool,
 }
 
-impl Batch {
+impl Line {
+    /// A line starting with a cell `width` columns wide.
+    fn new(row: usize, column: usize, width: usize, chars: impl Iterator<Item = char>, style: Style) -> Self {
+        let mut line = Self {
+            row,
+            column,
+            end: column + width,
+            space: false,
+            text: String::new(),
+            runs: Vec::new(),
+            wide: width == 2,
+        };
+        line.append(chars, style);
+        line
+    }
+
     fn continues_at(&self, row: usize, column: usize) -> bool {
-        !self.wide && self.row == row && self.end == column
+        !self.wide && self.row == row && self.end + self.space as usize == column
+    }
+
+    /// Adds the next cell's characters, after the space before it.
+    fn push(&mut self, chars: impl Iterator<Item = char>, style: Style) {
+        if std::mem::take(&mut self.space) {
+            // It draws nothing, so it can go in the run before it, if not under or through a line.
+            let last = self.runs.last().expect("a line starts with a cell").1.clone();
+            self.append(std::iter::once(' '), last.unlined());
+            self.end += 1;
+        }
+        self.append(chars, style);
+        self.end += 1;
+    }
+
+    fn append(&mut self, chars: impl Iterator<Item = char>, style: Style) {
+        let start = self.text.len();
+        self.text.extend(chars);
+        let len = self.text.len() - start;
+        match self.runs.last_mut() {
+            Some((run, last)) if *last == style => *run += len,
+            _ => self.runs.push((len, style)),
+        }
     }
 }
 
@@ -158,8 +206,18 @@ struct Shaper {
 
 impl Shaper {
     fn shape(&self, text: String, style: &Style) -> ShapedLine {
-        let run = TextRun {
-            len: text.len(),
+        let run = self.run(text.len(), style);
+        self.text_system.shape_line(text.into(), self.font_size, &[run], Some(self.cell_width))
+    }
+
+    fn shape_line(&self, line: Line) -> ShapedLine {
+        let runs: Vec<_> = line.runs.iter().map(|(len, style)| self.run(*len, style)).collect();
+        self.text_system.shape_line(line.text.into(), self.font_size, &runs, Some(self.cell_width))
+    }
+
+    fn run(&self, len: usize, style: &Style) -> TextRun {
+        TextRun {
+            len,
             font: Font {
                 weight: if style.bold { FontWeight::BOLD } else { FontWeight::NORMAL },
                 style: if style.italic { FontStyle::Italic } else { FontStyle::Normal },
@@ -175,8 +233,7 @@ impl Shaper {
             strikethrough: style
                 .strikethrough
                 .then_some(StrikethroughStyle { thickness: px(1.), color: Some(style.color) }),
-        };
-        self.text_system.shape_line(text.into(), self.font_size, &[run], Some(self.cell_width))
+        }
     }
 }
 
@@ -186,8 +243,7 @@ struct Cells {
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     /// Powerline's, in their cells, which a line's ends would otherwise stick out of.
     separators: Vec<(Bounds<Pixels>, Path<Pixels>, Hsla)>,
-    /// Runs of cells in one style.
-    batches: Vec<Batch>,
+    lines: Vec<Line>,
 }
 
 impl Cells {
@@ -229,29 +285,22 @@ impl Cells {
                 continue;
             }
 
+            // The cell a tab starts from keeps it, for copying, but draws as a space: shaped, it'd
+            // move what's after it to the font's tab stops.
+            let c = if cell.c == '\t' { ' ' } else { cell.c };
             let style = Style::of(cell, fg);
-            if cell.c == ' ' && !style.lined() {
-                // Spaces only extend a run, so runs keep their columns contiguous.
-                if let Some(batch) = cells.batches.last_mut()
-                    && batch.continues_at(row, column)
-                    && !batch.style.lined()
+            if c == ' ' && !style.lined() {
+                if let Some(line) = cells.lines.last_mut()
+                    && line.continues_at(row, column)
                 {
-                    batch.text.push(' ');
-                    batch.end += 1;
+                    line.space = true;
                 }
                 continue;
             }
-
-            let mut text = String::from(cell.c);
-            if let Some(zerowidth) = cell.zerowidth() {
-                text.extend(zerowidth);
-            }
-            match cells.batches.last_mut() {
-                Some(batch) if width == 1 && batch.style == style && batch.continues_at(row, column) => {
-                    batch.text.push_str(&text);
-                    batch.end += 1;
-                }
-                _ => cells.batches.push(Batch { row, column, end: column + width, text, style, wide: width == 2 }),
+            let chars = std::iter::once(c).chain(cell.zerowidth().unwrap_or_default().iter().copied());
+            match cells.lines.last_mut() {
+                Some(line) if width == 1 && line.continues_at(row, column) => line.push(chars, style),
+                _ => cells.lines.push(Line::new(row, column, width, chars, style)),
             }
         }
         cells
@@ -302,7 +351,7 @@ impl Cursor {
             _ => Self {
                 quad: fill(bounds, color),
                 glyph: (cell.c != ' ' && !cell.flags.contains(Flags::HIDDEN)).then(|| {
-                    let style = Style { underline: false, strikethrough: false, ..Style::of(cell, palette.background) };
+                    let style = Style::of(cell, palette.background).unlined();
                     (bounds.origin, shaper.shape(cell.c.to_string(), &style))
                 }),
             },
@@ -381,13 +430,9 @@ impl TerminalView {
         let (cursor_row, cursor_column) = (cursor.point.line.0 + content.display_offset as i32, cursor.point.column.0);
         let cells = Cells::new(content, selection, &palette, &geometry);
         let texts = cells
-            .batches
+            .lines
             .into_iter()
-            .filter_map(|batch| {
-                let text = if batch.style.lined() { batch.text } else { batch.text.trim_end().to_string() };
-                (!text.is_empty())
-                    .then(|| (geometry.cell_origin(batch.row, batch.column), shaper.shape(text, &batch.style)))
-            })
+            .map(|line| (geometry.cell_origin(line.row, line.column), shaper.shape_line(line)))
             .collect();
 
         let shown = cursor.shape != CursorShape::Hidden && (0..term.screen_lines() as i32).contains(&cursor_row);
