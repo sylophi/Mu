@@ -106,7 +106,7 @@ impl Preview {
         self.content = Content::None;
         self.version = None;
         self.scroll = UniformListScrollHandle::new();
-        self.pictures.clear(None, cx);
+        self.pictures.trim(None, cx);
         cx.notify();
         let Some(entry) = self.target.clone() else { return };
         // An alias shows what it leads to.

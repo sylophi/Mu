@@ -308,7 +308,7 @@ impl Browser {
         self.commit_rename(window, cx);
         self.filter = SharedString::default();
         self.error = None;
-        self.tiles.clear(Some(window), cx);
+        self.tiles.trim(Some(window), cx);
         self.after_load = AfterLoad { select, rename: false };
         // Through the handle a layout tracks too, which scrolling the list to its first row misses.
         self.scroll_handle().set_offset(Point::default());

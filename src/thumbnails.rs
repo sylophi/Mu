@@ -27,12 +27,28 @@ use crate::{fs::Entry, icons};
 pub struct Cache {
     size: Pixels,
     framed: bool,
-    pictures: HashMap<PathBuf, (Option<SystemTime>, Option<Arc<RenderImage>>)>,
+    pictures: HashMap<PathBuf, Picture>,
+    /// How many pictures `trim` keeps.
+    keep: usize,
+    /// How many times it's been asked for a picture, which dates when each was last asked for.
+    asked: u64,
+}
+
+/// `trim` keeps as many pictures as tile a square this many points across: hundreds of the grid's,
+/// a few of the preview's.
+const ROOM: f32 = 1024.;
+
+struct Picture {
+    /// When its file was last modified as of making it.
+    made: Option<SystemTime>,
+    image: Option<Arc<RenderImage>>,
+    asked: u64,
 }
 
 impl Cache {
     pub fn new(size: Pixels) -> Self {
-        Self { size, framed: false, pictures: HashMap::new() }
+        let keep = (ROOM / f32::from(size)).powi(2) as usize;
+        Self { size, framed: false, pictures: HashMap::new(), keep, asked: 0 }
     }
 
     /// Pictures framed the way Finder's icon view shows them: a document as a page, a photo with
@@ -56,21 +72,24 @@ impl Cache {
         }
         // An alias shows what it leads to.
         let (path, modified) = (entry.target(), entry.modified);
-        if let Some((made, picture)) = self.pictures.get(path)
-            && *made == modified
+        self.asked += 1;
+        if let Some(picture) = self.pictures.get_mut(path)
+            && picture.made == modified
         {
-            return picture.clone();
+            picture.asked = self.asked;
+            return picture.image.clone();
         }
         let path = path.to_path_buf();
         let picture = make(&path, self.size, window.scale_factor(), self.framed);
-        if let Some((_, Some(stale))) = self.pictures.insert(path.clone(), (modified, None)) {
+        let slot = Picture { made: modified, image: None, asked: self.asked };
+        if let Some(Picture { image: Some(stale), .. }) = self.pictures.insert(path.clone(), slot) {
             cx.drop_image(stale, Some(window));
         }
         cx.spawn(async move |view, cx| {
             let picture = picture.await;
             view.update(cx, |view, cx| match cache(view).pictures.get_mut(&path) {
-                Some(slot) if slot.0 == modified => {
-                    slot.1 = picture;
+                Some(slot) if slot.made == modified => {
+                    slot.image = picture;
                     cx.notify();
                 }
                 _ => {
@@ -85,9 +104,29 @@ impl Cache {
         None
     }
 
+    /// Lets go of all but the pictures asked for last, as the view moves on from the files it
+    /// showed, so going back to them shows them right away.
+    pub fn trim(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+        let over = self.pictures.len().saturating_sub(self.keep);
+        if over == 0 {
+            return;
+        }
+        let mut asked: Vec<u64> = self.pictures.values().map(|picture| picture.asked).collect();
+        // All but the `over` asked for longest ago.
+        let kept = *asked.select_nth_unstable(over).1;
+        self.pictures.retain(|_, picture| {
+            if picture.asked < kept
+                && let Some(image) = picture.image.take()
+            {
+                cx.drop_image(image, window.as_deref_mut());
+            }
+            picture.asked >= kept
+        });
+    }
+
     /// Lets go of the pictures, which the GPU holds on to until it's told.
     pub fn clear(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
-        for picture in self.pictures.drain().filter_map(|(_, (_, picture))| picture) {
+        for picture in self.pictures.drain().filter_map(|(_, picture)| picture.image) {
             cx.drop_image(picture, window.as_deref_mut());
         }
     }
