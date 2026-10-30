@@ -13,7 +13,10 @@ use std::{
     ops::Range,
     os::{fd::AsRawFd as _, unix::ffi::OsStrExt as _},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use alacritty_terminal::{
@@ -54,11 +57,19 @@ pub enum TerminalEvent {
 }
 
 #[derive(Clone)]
-struct Listener(smol::channel::Sender<AlacEvent>);
+struct Listener {
+    events: smol::channel::Sender<AlacEvent>,
+    /// Whether output waits to be drawn. The parser asks to wake the view on every read from the PTY,
+    /// tens of thousands of times a second in a flood of output, but a frame draws it all at once.
+    redraw_pending: Arc<AtomicBool>,
+}
 
 impl EventListener for Listener {
     fn send_event(&self, event: AlacEvent) {
-        self.0.try_send(event).ok();
+        if matches!(event, AlacEvent::Wakeup) && self.redraw_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.events.try_send(event).ok();
     }
 }
 
@@ -87,6 +98,8 @@ impl Geometry {
 pub struct TerminalView {
     term: Arc<FairMutex<Term<Listener>>>,
     notifier: Notifier,
+    /// Set until the next frame takes in the output the parser woke the view for.
+    redraw_pending: Arc<AtomicBool>,
     focus_handle: FocusHandle,
     /// Our own handle on the PTY, to find what runs in the foreground and where. The event loop
     /// closes its handle when the shell exits, and that descriptor number can then be reused.
@@ -110,7 +123,8 @@ impl EventEmitter<TerminalEvent> for TerminalView {}
 impl TerminalView {
     pub fn new(cwd: PathBuf, cx: &mut Context<Self>) -> Self {
         let (events_tx, events_rx) = smol::channel::unbounded();
-        let listener = Listener(events_tx);
+        let listener = Listener { events: events_tx, redraw_pending: Arc::default() };
+        let redraw_pending = listener.redraw_pending.clone();
         let geometry =
             Geometry { origin: Point::default(), cell_width: px(8.), line_height: px(16.), columns: 80, lines: 24 };
         let term = Arc::new(FairMutex::new(Term::new(
@@ -151,6 +165,7 @@ impl TerminalView {
         Self {
             term,
             notifier,
+            redraw_pending,
             focus_handle: cx.focus_handle(),
             pty_file,
             cwd,
@@ -593,5 +608,24 @@ impl EntityInputHandler for TerminalView {
 
     fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AlacEvent, Arc, EventListener as _, Listener, Ordering};
+
+    #[test]
+    fn output_wakes_the_view_once_a_frame() {
+        let (events, received) = smol::channel::unbounded();
+        let listener = Listener { events, redraw_pending: Arc::default() };
+        listener.send_event(AlacEvent::Wakeup);
+        listener.send_event(AlacEvent::Wakeup);
+        listener.send_event(AlacEvent::Bell);
+        assert_eq!(received.len(), 2);
+        // A frame took the output in.
+        listener.redraw_pending.store(false, Ordering::Release);
+        listener.send_event(AlacEvent::Wakeup);
+        assert_eq!(received.len(), 3);
     }
 }
