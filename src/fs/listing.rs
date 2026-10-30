@@ -319,7 +319,7 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// What changed next, once its burst has settled. None once the watcher's gone.
+    /// What changed next, once its burst has settled.
     pub async fn next(&self) -> Option<Vec<PathBuf>> {
         let mut changed = self.rx.recv().await.ok()?;
         smol::Timer::after(self.settle).await;

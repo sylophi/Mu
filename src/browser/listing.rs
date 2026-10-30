@@ -10,6 +10,7 @@ use std::{
 };
 
 use gpui_kit::*;
+use objc2_app_kit::NSEvent;
 
 use super::{
     Browser,
@@ -199,6 +200,11 @@ impl Browser {
             if let Ok(entries) = receiver.recv().await {
                 this.update_in(cx, |this, window, cx| this.draw_ahead(&entries, window, cx)).ok();
             }
+            // Let go of once a double click from the press is past, rather than kept watching and
+            // going stale until the next folder.
+            let double_click = Duration::from_secs_f64(NSEvent::doubleClickInterval());
+            cx.background_executor().timer(double_click).await;
+            this.update(cx, |this, _| this.prefetch = None).ok();
         });
         self.prefetch = Some(Prefetch { path, changes, listing, _draw: draw });
     }
