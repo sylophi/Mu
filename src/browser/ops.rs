@@ -125,7 +125,7 @@ impl Browser {
     }
 
     pub(super) fn open_in_terminal(&mut self, cx: &mut Context<Self>) {
-        let dir = match self.cursor_entry().filter(|e| e.folder && self.selection.contains(&e.name)) {
+        let dir = match self.selected_cursor_entry().filter(|e| e.folder) {
             Some(entry) => entry.target().to_path_buf(),
             None => self.path.clone(),
         };

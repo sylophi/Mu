@@ -241,7 +241,7 @@ impl Browser {
 
     /// The selected item under the cursor, for the preview pane.
     pub fn preview_target(&self) -> Option<Entry> {
-        self.cursor_entry().filter(|e| self.selection.contains(&e.name)).cloned()
+        self.selected_cursor_entry().cloned()
     }
 
     /// (items shown, items selected, bytes in the selected files)
@@ -332,6 +332,7 @@ impl Browser {
                 if this.focus_handle.contains_focused(window, cx) {
                     quicklook::follow(|| this.selected_paths());
                 }
+                this.prefetch_cursor(window, cx);
             }),
         ]
     }

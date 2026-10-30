@@ -319,6 +319,11 @@ pub struct Changes {
 }
 
 impl Changes {
+    /// Whether something changed that `next` hasn't handed over yet.
+    pub fn is_pending(&self) -> bool {
+        !self.rx.is_empty()
+    }
+
     /// What changed next, once its burst has settled.
     pub async fn next(&self) -> Option<Vec<PathBuf>> {
         let mut changed = self.rx.recv().await.ok()?;
