@@ -76,3 +76,4 @@ codegen-units = 1
 # patches/ that goes into what it changes and why. `make` applies them before it builds.
 [patch.crates-io]
 gpui-pre-macos = { path = "patched/gpui-pre-macos" }
+gpui-pre-apple = { path = "patched/gpui-pre-apple" }
