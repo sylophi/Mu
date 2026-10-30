@@ -10,7 +10,7 @@ mod view;
 
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use gpui_kit::component::{
@@ -134,10 +134,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", CancelRename, Some("Rename")),
     ]);
 }
-
-/// How long going to a folder waits for its listing. Most folders list in a millisecond or two, so
-/// they show up in the very next frame, without a frame of the folder that was there before.
-const LISTING_WAIT: Duration = Duration::from_millis(20);
 
 pub struct Browser {
     path: PathBuf,

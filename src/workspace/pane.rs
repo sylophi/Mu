@@ -281,9 +281,9 @@ impl Workspace {
     }
 
     /// Gets the folder at `path` ready for `show_folder`.
-    pub(super) fn prefetch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn prefetch(&self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(browser) = self.active_folder().or(self.last_folder.as_ref()) {
-            browser.clone().update(cx, |browser, cx| browser.prefetch(path, window, cx));
+            browser.update(cx, |browser, cx| browser.prefetch(path, window, cx));
         }
     }
 

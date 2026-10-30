@@ -28,8 +28,6 @@ pub struct Cache {
     size: Pixels,
     framed: bool,
     pictures: HashMap<PathBuf, Picture>,
-    /// How many pictures `trim` keeps.
-    keep: usize,
     /// How many times it's been asked for a picture, which dates when each was last asked for.
     asked: u64,
 }
@@ -47,8 +45,7 @@ struct Picture {
 
 impl Cache {
     pub fn new(size: Pixels) -> Self {
-        let keep = (ROOM / f32::from(size)).powi(2) as usize;
-        Self { size, framed: false, pictures: HashMap::new(), keep, asked: 0 }
+        Self { size, framed: false, pictures: HashMap::new(), asked: 0 }
     }
 
     /// Pictures framed the way Finder's icon view shows them: a document as a page, a photo with
@@ -107,21 +104,18 @@ impl Cache {
     /// Lets go of all but the pictures asked for last, as the view moves on from the files it
     /// showed, so going back to them shows them right away.
     pub fn trim(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
-        let over = self.pictures.len().saturating_sub(self.keep);
+        let keep = (ROOM / f32::from(self.size)).powi(2) as usize;
+        let over = self.pictures.len().saturating_sub(keep);
         if over == 0 {
             return;
         }
         let mut asked: Vec<u64> = self.pictures.values().map(|picture| picture.asked).collect();
         // All but the `over` asked for longest ago.
         let kept = *asked.select_nth_unstable(over).1;
-        self.pictures.retain(|_, picture| {
-            if picture.asked < kept
-                && let Some(image) = picture.image.take()
-            {
-                cx.drop_image(image, window.as_deref_mut());
-            }
-            picture.asked >= kept
-        });
+        let old = self.pictures.extract_if(|_, picture| picture.asked < kept);
+        for picture in old.filter_map(|(_, picture)| picture.image) {
+            cx.drop_image(picture, window.as_deref_mut());
+        }
     }
 
     /// Lets go of the pictures, which the GPU holds on to until it's told.

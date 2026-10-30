@@ -282,7 +282,6 @@ impl<'a> Record<'a> {
 pub fn watch(dir: &Path, settle: Duration, executor: &BackgroundExecutor) -> Changes {
     let since = SystemTime::now();
     let (tx, rx) = smol::channel::unbounded();
-    let (stop, stopped) = smol::channel::bounded::<()>(1);
     let dir = dir.to_owned();
     executor
         .spawn(async move {
@@ -306,18 +305,17 @@ pub fn watch(dir: &Path, settle: Duration, executor: &BackgroundExecutor) -> Cha
             {
                 started.send(Vec::new()).await.ok();
             }
-            stopped.recv().await.ok();
+            // Until the changes drop.
+            started.closed().await;
         })
         .detach();
-    Changes { rx, settle, _stop: stop }
+    Changes { rx, settle }
 }
 
 /// What changes in a folder `watch`es.
 pub struct Changes {
     rx: smol::channel::Receiver<Vec<PathBuf>>,
     settle: Duration,
-    /// Stops the watcher as it drops.
-    _stop: smol::channel::Sender<()>,
 }
 
 impl Changes {

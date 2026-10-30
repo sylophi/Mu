@@ -12,7 +12,7 @@ use std::{
 use gpui_kit::*;
 
 use super::{
-    Browser, LISTING_WAIT,
+    Browser,
     layout::Layout,
     view::{ROW_ICON, TILE_ICON},
 };
@@ -22,6 +22,10 @@ use crate::{
     permissions::Permissions,
     settings::Settings,
 };
+
+/// How long going to a folder waits for its listing. Most folders list in a millisecond or two, so
+/// they show up in the very next frame, without a frame of the folder that was there before.
+const LISTING_WAIT: Duration = Duration::from_millis(20);
 
 /// What the listing is sorted by, one for each of the list's columns.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -74,8 +78,8 @@ pub(super) struct Listing {
     entries: Vec<Entry>,
     /// Indices into `entries`, without hidden files and filtered by name.
     visible: Vec<usize>,
-    /// Where each item that shows is in `visible`, by name.
-    positions: HashMap<SharedString, usize>,
+    /// Where each item is in `entries`, by name.
+    by_name: HashMap<SharedString, usize>,
     pub(super) sort: SortKey,
     pub(super) descending: bool,
 }
@@ -97,13 +101,15 @@ impl Listing {
 
     /// Where the item named `name` shows, if it does.
     pub(super) fn position(&self, name: &str) -> Option<usize> {
-        self.positions.get(name).copied()
+        // `visible` keeps to the order of `entries`.
+        self.visible.binary_search(self.by_name.get(name)?).ok()
     }
 
-    /// Shows the entries at `visible`, in that order.
-    fn show(&mut self, visible: Vec<usize>) {
-        self.positions = visible.iter().enumerate().map(|(at, &ix)| (self.entries[ix].name.clone(), at)).collect();
-        self.visible = visible;
+    /// Puts the items in the order they show in.
+    fn sort(&mut self) {
+        let (sort, descending) = (self.sort, self.descending);
+        self.entries.sort_by(|a, b| compare(a, b, sort, descending));
+        self.by_name = self.entries.iter().enumerate().map(|(ix, entry)| (entry.name.clone(), ix)).collect();
     }
 }
 
@@ -118,7 +124,10 @@ impl Index<usize> for Listing {
 
 impl Browser {
     pub(super) fn load(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.load_within(Duration::ZERO, window, cx);
+        // Started right away, not when the task that shows it first runs, which can be a while at
+        // launch.
+        let listing = self.list(self.path.clone(), window, cx);
+        self.load_from(listing, Duration::ZERO, window, cx);
     }
 
     /// Loads the folder again, then selects whichever of `paths` are in it, and with `rename`,
@@ -134,13 +143,6 @@ impl Browser {
             self.after_load = AfterLoad { select: paths, rename };
         }
         self.load(window, cx);
-    }
-
-    /// Lists the folder in the background, giving it up to `wait` to finish first.
-    pub(super) fn load_within(&mut self, wait: Duration, window: &mut Window, cx: &mut Context<Self>) {
-        // Started right away, not when the task below first runs, which can be a while at launch.
-        let listing = self.list(self.path.clone(), window, cx, |_| {});
-        self.load_from(listing, wait, window, cx);
     }
 
     /// Shows what `listing` comes to, giving it up to `wait` to come first.
@@ -160,14 +162,8 @@ impl Browser {
         });
     }
 
-    /// Lists `path` in the background, sorted as this listing is, and hands it to `listed` there.
-    fn list(
-        &self,
-        path: PathBuf,
-        window: &Window,
-        cx: &App,
-        listed: impl FnOnce(&Listed) + Send + 'static,
-    ) -> Task<Listed> {
+    /// Lists `path` in the background, sorted as this listing is.
+    fn list(&self, path: PathBuf, window: &Window, cx: &App) -> Task<Listed> {
         let (sort, descending, scale) = (self.listing.sort, self.listing.descending, window.scale_factor());
         cx.background_spawn(async move {
             // Sorted here, so sorting it again on the main thread only checks the order.
@@ -175,10 +171,7 @@ impl Browser {
                 entries.sort_by(|a, b| compare(a, b, sort, descending));
                 entries
             });
-            let layout = Layout::read(&path, scale);
-            let result = (listing, layout);
-            listed(&result);
-            result
+            (listing, Layout::read(&path, scale))
         })
     }
 
@@ -192,12 +185,15 @@ impl Browser {
         let settings = Settings::get(cx);
         let (show_hidden, first) = (settings.show_hidden, self.screenful(settings.grid));
         let (sender, receiver) = smol::channel::bounded(1);
-        let listing = self.list(path.clone(), window, cx, move |listed| {
+        let listing = self.list(path.clone(), window, cx);
+        let listing = cx.background_spawn(async move {
+            let listed = listing.await;
             // What it shows first, unless Finder lays it out.
-            if let (Ok(entries), None) = listed {
+            if let (Ok(entries), None) = &listed {
                 let shown = entries.iter().filter(|entry| show_hidden || !entry.hidden);
                 sender.try_send(shown.take(first).cloned().collect::<Vec<_>>()).ok();
             }
+            listed
         });
         let draw = cx.spawn_in(window, async move |this, cx| {
             if let Ok(entries) = receiver.recv().await {
@@ -224,7 +220,7 @@ impl Browser {
     pub(super) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (changes, listing) = match self.prefetch.take().filter(|prefetch| prefetch.path == self.path) {
             Some(prefetch) => (prefetch.changes, prefetch.listing),
-            None => (watcher(&self.path, cx), self.list(self.path.clone(), window, cx, |_| {})),
+            None => (watcher(&self.path, cx), self.list(self.path.clone(), window, cx)),
         };
         self.watch(changes, window, cx);
         self.load_from(listing, LISTING_WAIT, window, cx);
@@ -246,12 +242,7 @@ impl Browser {
         });
     }
 
-    fn apply_listing(
-        &mut self,
-        (listed, layout): (io::Result<Vec<Entry>>, Option<Layout>),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_listing(&mut self, (listed, layout): Listed, window: &mut Window, cx: &mut Context<Self>) {
         self.loading = false;
         // Each load draws the picture again, and the GPU keeps the last one until it's let go of.
         if let Some(old) = std::mem::replace(&mut self.layout, layout) {
@@ -304,9 +295,7 @@ impl Browser {
     }
 
     fn sort_entries(&mut self, cx: &mut Context<Self>) {
-        let listing = &mut self.listing;
-        let (sort, descending) = (listing.sort, listing.descending);
-        listing.entries.sort_by(|a, b| compare(a, b, sort, descending));
+        self.listing.sort();
         self.update_visible(cx);
     }
 
@@ -316,11 +305,10 @@ impl Browser {
         let show_hidden = Settings::get(cx).show_hidden;
         let filter = self.filter.to_lowercase();
         let listing = &mut self.listing;
-        let visible = (0..listing.entries.len())
+        listing.visible = (0..listing.entries.len())
             .filter(|&ix| show_hidden || !listing.entries[ix].hidden)
             .filter(|&ix| filter.is_empty() || listing.entries[ix].name.to_lowercase().contains(&filter))
             .collect();
-        listing.show(visible);
         self.selection.keep_to(&self.listing);
         if self.rename.as_ref().is_some_and(|rename| self.listing.position(&rename.name).is_none()) {
             self.rename = None;
@@ -410,9 +398,8 @@ pub(super) mod tests {
     /// A listing of files named `names` that shows them all, in that order.
     pub fn listing(names: &[&str]) -> Listing {
         let entries: Vec<Entry> = names.iter().map(|name| entry(name, false)).collect();
-        let mut listing = Listing { entries, ..Listing::default() };
-        listing.show((0..names.len()).collect());
-        listing
+        let by_name = names.iter().enumerate().map(|(ix, name)| (SharedString::from(*name), ix)).collect();
+        Listing { visible: (0..entries.len()).collect(), by_name, entries, ..Listing::default() }
     }
 
     /// The names of `entries` in the order `sort` puts them in.
