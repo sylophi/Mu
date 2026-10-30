@@ -1,6 +1,6 @@
 //! Loading the folder and keeping up with it: its items, their order, and which of them show.
 
-use std::{cmp::Ordering, io, ops::Index, path::PathBuf, time::Duration};
+use std::{cmp::Ordering, collections::HashMap, io, ops::Index, path::PathBuf, time::Duration};
 
 use gpui_kit::*;
 
@@ -50,6 +50,8 @@ pub(super) struct Listing {
     entries: Vec<Entry>,
     /// Indices into `entries`, without hidden files and filtered by name.
     visible: Vec<usize>,
+    /// Where each item that shows is in `visible`, by name.
+    positions: HashMap<SharedString, usize>,
     pub(super) sort: SortKey,
     pub(super) descending: bool,
 }
@@ -71,7 +73,13 @@ impl Listing {
 
     /// Where the item named `name` shows, if it does.
     pub(super) fn position(&self, name: &str) -> Option<usize> {
-        self.iter().position(|entry| *entry.name == *name)
+        self.positions.get(name).copied()
+    }
+
+    /// Shows the entries at `visible`, in that order.
+    fn show(&mut self, visible: Vec<usize>) {
+        self.positions = visible.iter().enumerate().map(|(at, &ix)| (self.entries[ix].name.clone(), at)).collect();
+        self.visible = visible;
     }
 }
 
@@ -222,10 +230,11 @@ impl Browser {
         let show_hidden = Settings::get(cx).show_hidden;
         let filter = self.filter.to_lowercase();
         let listing = &mut self.listing;
-        listing.visible = (0..listing.entries.len())
+        let visible = (0..listing.entries.len())
             .filter(|&ix| show_hidden || !listing.entries[ix].hidden)
             .filter(|&ix| filter.is_empty() || listing.entries[ix].name.to_lowercase().contains(&filter))
             .collect();
+        listing.show(visible);
         self.selection.keep_to(&self.listing);
         if self.rename.as_ref().is_some_and(|rename| self.listing.position(&rename.name).is_none()) {
             self.rename = None;
@@ -310,7 +319,9 @@ pub(super) mod tests {
     /// A listing of files named `names` that shows them all, in that order.
     pub fn listing(names: &[&str]) -> Listing {
         let entries: Vec<Entry> = names.iter().map(|name| entry(name, false)).collect();
-        Listing { visible: (0..entries.len()).collect(), entries, ..Listing::default() }
+        let mut listing = Listing { entries, ..Listing::default() };
+        listing.show((0..names.len()).collect());
+        listing
     }
 
     /// The names of `entries` in the order `sort` puts them in.

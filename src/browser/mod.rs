@@ -249,7 +249,8 @@ impl Browser {
 
     /// (items shown, items selected, bytes in the selected files)
     pub fn status(&self) -> (usize, usize, u64) {
-        let size = self.selected_entries().into_iter().map(|e| e.size).sum();
+        let selected = self.selection.names.iter().filter_map(|name| self.listing.position(name));
+        let size = selected.map(|ix| self.listing[ix].size).sum();
         (self.listing.len(), self.selection.len(), size)
     }
 
