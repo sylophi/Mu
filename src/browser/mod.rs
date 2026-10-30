@@ -35,7 +35,7 @@ use crate::{
 };
 
 use layout::Layout;
-use listing::{AfterLoad, Listing};
+use listing::{AfterLoad, Listing, Prefetch};
 use marquee::{Marquee, SelectArea};
 use ops::{CutFiles, RenameState};
 use selection::Selection;
@@ -154,6 +154,8 @@ pub struct Browser {
     type_ahead: String,
     type_ahead_at: Instant,
     loading: bool,
+    /// The folder got ready to open next.
+    prefetch: Option<Prefetch>,
     /// The divider being dragged and the column widths it has made so far, saved once it's let go.
     resizing: Option<(usize, [Pixels; 4])>,
     marquee: Option<Marquee>,
@@ -199,6 +201,7 @@ impl Browser {
             type_ahead: String::new(),
             type_ahead_at: Instant::now(),
             loading: false,
+            prefetch: None,
             resizing: None,
             marquee: None,
             focus_handle: cx.focus_handle(),
@@ -269,6 +272,8 @@ impl Browser {
             // Already there: another look selects them.
             self.reload_selecting(paths, false, window, cx);
         } else {
+            // They may be newer than a listing got ready ahead.
+            self.prefetch = None;
             self.go(parent, paths, window, cx);
         }
     }
@@ -312,8 +317,7 @@ impl Browser {
         self.after_load = AfterLoad { select, rename: false };
         // Through the handle a layout tracks too, which scrolling the list to its first row misses.
         self.scroll_handle().set_offset(Point::default());
-        self.watch(window, cx);
-        self.load_within(LISTING_WAIT, window, cx);
+        self.arrive(window, cx);
         cx.emit(TabEvent::Navigated(self.path.clone()));
         cx.notify();
     }
@@ -339,7 +343,7 @@ impl Browser {
     /// Follows its tab into another window, which it keeps up with and loads into from then on.
     pub fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._in_window = Self::observe_in_window(window, cx);
-        self.watch(window, cx);
+        self.watch(listing::watcher(&self.path, cx), window, cx);
         self.load(window, cx);
     }
 }

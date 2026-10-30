@@ -181,6 +181,10 @@ impl Browser {
         self.focus_handle.focus(window, cx);
         let name = self.name_at(ix);
         let modifiers = event.modifiers;
+        // The first press of what may be a double click.
+        if event.click_count == 1 && !modifiers.shift && !modifiers.platform && self.listing[ix].folder {
+            self.prefetch(self.listing[ix].target().to_path_buf(), window, cx);
+        }
         if modifiers.platform && event.click_count == 2 {
             // ⌘-double-click opens a folder in a new tab, like Finder. The first click selected it.
             let entry = &self.listing[ix];

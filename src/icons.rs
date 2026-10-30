@@ -60,6 +60,23 @@ pub fn entry(entry: &Entry, size: Pixels) -> Div {
     badged(icon(own, generic(path, entry.folder, program), size), entry, size)
 }
 
+/// Starts drawing the icon `entry` shows, `size` big at `scale`, before it shows, like in a folder
+/// that's about to open.
+pub fn prefetch(entry: &Entry, size: Pixels, scale: f32, cx: &mut App) {
+    let (path, program) = (entry.target(), entry.category == Category::Executable);
+    let of = match draws_own(entry) {
+        true => Of::Path(path.to_path_buf()),
+        false => generic(path, entry.folder, program),
+    };
+    let key = (of, (f32::from(size) * scale).round() as u32);
+    let icons = cx.default_global::<Icons>();
+    let drawn = icons.drawn.get(&key.0).is_some_and(|sides| sides.contains_key(&key.1));
+    if !drawn && !icons.drawing.contains_key(&key) {
+        icons.drawing.insert(key.clone(), HashSet::new());
+        draw_later(key, cx);
+    }
+}
+
 /// `picture` of `entry`, with the badge for a link or a locked item on its bottom left corner,
 /// sized the way macOS sizes it for an icon `size` square.
 pub fn badged(picture: impl IntoElement, entry: &Entry, size: Pixels) -> Div {

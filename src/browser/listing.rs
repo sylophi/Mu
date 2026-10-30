@@ -1,12 +1,23 @@
 //! Loading the folder and keeping up with it: its items, their order, and which of them show.
 
-use std::{cmp::Ordering, collections::HashMap, io, ops::Index, path::PathBuf, time::Duration};
+use std::{
+    cmp::Ordering,
+    collections::HashMap,
+    io,
+    ops::Index,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use gpui_kit::*;
 
-use super::{Browser, layout::Layout};
+use super::{
+    Browser, LISTING_WAIT,
+    layout::Layout,
+    view::{ROW_ICON, TILE_ICON},
+};
 use crate::{
-    fs::{self, Entry},
+    fs::{self, Changes, Entry},
     icons,
     permissions::Permissions,
     settings::Settings,
@@ -42,6 +53,19 @@ impl SortKey {
 pub(super) struct AfterLoad {
     pub(super) select: Vec<PathBuf>,
     pub(super) rename: bool,
+}
+
+/// A folder's items, sorted, and how Finder lays it out, if it does.
+type Listed = (io::Result<Vec<Entry>>, Option<Layout>);
+
+/// A folder got ready from a press that may be the start of what opens it, a click or a double
+/// click, so that it opens with its items, their icons and their pictures there. Like the folder
+/// shown, it's watched from when it's listed, so what changes until it opens isn't missed.
+pub(super) struct Prefetch {
+    path: PathBuf,
+    changes: Changes,
+    listing: Task<Listed>,
+    _draw: Task<()>,
 }
 
 /// What's in the folder, in order, and which of it shows.
@@ -114,21 +138,14 @@ impl Browser {
 
     /// Lists the folder in the background, giving it up to `wait` to finish first.
     pub(super) fn load_within(&mut self, wait: Duration, window: &mut Window, cx: &mut Context<Self>) {
-        self.loading = true;
-        let (sort, descending, scale) = (self.listing.sort, self.listing.descending, window.scale_factor());
         // Started right away, not when the task below first runs, which can be a while at launch.
-        let listing = cx.background_spawn({
-            let path = self.path.clone();
-            async move {
-                // Sorted here, so sorting it again on the main thread only checks the order.
-                let listing = fs::list_dir(&path).map(|mut entries| {
-                    entries.sort_by(|a, b| compare(a, b, sort, descending));
-                    entries
-                });
-                let layout = Layout::read(&path, scale);
-                (listing, layout)
-            }
-        });
+        let listing = self.list(self.path.clone(), window, cx, |_| {});
+        self.load_from(listing, wait, window, cx);
+    }
+
+    /// Shows what `listing` comes to, giving it up to `wait` to come first.
+    fn load_from(&mut self, listing: Task<Listed>, wait: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        self.loading = true;
         let listing = match cx.foreground_executor().block_with_timeout(wait, listing) {
             Ok(listing) => {
                 self._load = Task::ready(());
@@ -143,8 +160,78 @@ impl Browser {
         });
     }
 
-    pub(super) fn watch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let changes = fs::watch(&self.path, Duration::from_millis(120), cx.background_executor());
+    /// Lists `path` in the background, sorted as this listing is, and hands it to `listed` there.
+    fn list(
+        &self,
+        path: PathBuf,
+        window: &Window,
+        cx: &App,
+        listed: impl FnOnce(&Listed) + Send + 'static,
+    ) -> Task<Listed> {
+        let (sort, descending, scale) = (self.listing.sort, self.listing.descending, window.scale_factor());
+        cx.background_spawn(async move {
+            // Sorted here, so sorting it again on the main thread only checks the order.
+            let listing = fs::list_dir(&path).map(|mut entries| {
+                entries.sort_by(|a, b| compare(a, b, sort, descending));
+                entries
+            });
+            let layout = Layout::read(&path, scale);
+            let result = (listing, layout);
+            listed(&result);
+            result
+        })
+    }
+
+    /// Gets the folder at `path` ready to open, in place of this one: watches and lists it, then
+    /// draws the icons and pictures it opens with.
+    pub fn prefetch(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if path == self.path {
+            return;
+        }
+        let changes = watcher(&path, cx);
+        let settings = Settings::get(cx);
+        let (show_hidden, first) = (settings.show_hidden, self.screenful(settings.grid));
+        let (sender, receiver) = smol::channel::bounded(1);
+        let listing = self.list(path.clone(), window, cx, move |listed| {
+            // What it shows first, unless Finder lays it out.
+            if let (Ok(entries), None) = listed {
+                let shown = entries.iter().filter(|entry| show_hidden || !entry.hidden);
+                sender.try_send(shown.take(first).cloned().collect::<Vec<_>>()).ok();
+            }
+        });
+        let draw = cx.spawn_in(window, async move |this, cx| {
+            if let Ok(entries) = receiver.recv().await {
+                this.update_in(cx, |this, window, cx| this.draw_ahead(&entries, window, cx)).ok();
+            }
+        });
+        self.prefetch = Some(Prefetch { path, changes, listing, _draw: draw });
+    }
+
+    /// Starts drawing the icons and pictures of `entries`, so they show as soon as their folder does.
+    fn draw_ahead(&mut self, entries: &[Entry], window: &mut Window, cx: &mut Context<Self>) {
+        let (grid, scale) = (Settings::get(cx).grid, window.scale_factor());
+        for entry in entries {
+            if grid {
+                icons::prefetch(entry, TILE_ICON, scale, cx);
+                self.tiles.get(entry, window, cx, |this| &mut this.tiles);
+            } else {
+                icons::prefetch(entry, ROW_ICON, scale, cx);
+            }
+        }
+    }
+
+    /// Keeps up with the folder just gone to and lists it, taking what was got ready for it.
+    pub(super) fn arrive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (changes, listing) = match self.prefetch.take().filter(|prefetch| prefetch.path == self.path) {
+            Some(prefetch) => (prefetch.changes, prefetch.listing),
+            None => (watcher(&self.path, cx), self.list(self.path.clone(), window, cx, |_| {})),
+        };
+        self.watch(changes, window, cx);
+        self.load_from(listing, LISTING_WAIT, window, cx);
+    }
+
+    /// Keeps up with the folder through `changes`, from its watcher.
+    pub(super) fn watch(&mut self, changes: Changes, window: &mut Window, cx: &mut Context<Self>) {
         self._watch = cx.spawn_in(window, async move |this, cx| {
             while let Some(changed) = changes.next().await {
                 let update = this.update_in(cx, |this, window, cx| {
@@ -269,6 +356,11 @@ impl Browser {
         }
         self.sort_entries(cx);
     }
+}
+
+/// Watches the folder at `path`, a change at a time once its burst settles.
+pub(super) fn watcher(path: &Path, cx: &App) -> Changes {
+    fs::watch(path, Duration::from_millis(120), cx.background_executor())
 }
 
 /// The order items are shown in: folders first, then by `sort`, ties by name.

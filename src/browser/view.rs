@@ -34,7 +34,7 @@ pub(super) const TILE_ICON: Pixels = px(56.);
 const TILE_PADDING: Pixels = px(4.);
 /// The cloud mark after a name, and the gap before it.
 const CLOUD_MARK: Pixels = px(14.);
-const ROW_ICON: Pixels = px(16.);
+pub(super) const ROW_ICON: Pixels = px(16.);
 pub(super) const HEADER_HEIGHT: Pixels = px(24.);
 /// The least a list column can be dragged down to.
 const MIN_COLUMN_WIDTH: Pixels = px(40.);
@@ -110,6 +110,15 @@ impl Browser {
         match self.mode(cx) {
             Mode::Grid => (self.width / CELL_WIDTH).floor().max(1.) as usize,
             Mode::List | Mode::Layout(_) => 1,
+        }
+    }
+
+    /// How many items a list, or a grid, this big shows from its top.
+    pub(super) fn screenful(&self, grid: bool) -> usize {
+        let height = self.scroll_handle().bounds().size.height;
+        match grid {
+            true => (self.width / CELL_WIDTH).floor().max(1.) as usize * (height / CELL_HEIGHT).ceil() as usize,
+            false => (height / ROW_HEIGHT).ceil() as usize,
         }
     }
 

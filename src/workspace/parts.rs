@@ -70,8 +70,17 @@ pub(super) fn close_button(
 /// Has `element` show the folder at `path` when it's clicked, or open it in a tab behind the active
 /// one with ⌘ or a middle click, as places in the sidebar and the path bar do.
 pub(super) fn opens_folder(element: Stateful<Div>, path: PathBuf, cx: &Context<Workspace>) -> Stateful<Div> {
-    let clicked = path.clone();
+    let (pressed, clicked) = (path.clone(), path.clone());
     element
+        // A click starts with a press, from which the folder's got ready, unless it's for a new tab.
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                if !event.modifiers.platform {
+                    this.prefetch(pressed.clone(), window, cx);
+                }
+            }),
+        )
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             cx.stop_propagation();
             match event.modifiers().platform {
