@@ -356,7 +356,8 @@ fn paper(width: f64, height: f64) -> String {
     }
 }
 
-/// A font's family, its styles, version and how many glyphs it has. A collection holds several fonts.
+/// A font's families and styles, with the version and glyph count of the first, as a collection
+/// holds several fonts.
 fn font(path: &Path) -> Vec<Detail> {
     let Some(descriptors) =
         CFURL::from_file_path(path).and_then(|url| unsafe { CTFontManagerCreateFontDescriptorsFromURL(&url) })
