@@ -114,7 +114,7 @@ impl Preview {
         // Its details come in on their own, as some take longer to read than what it holds.
         let read = cx.background_spawn({
             let entry = entry.clone();
-            async move { details::read(&entry) }
+            async move { objc2::rc::autoreleasepool(|_| details::read(&entry)) }
         });
         self._details = cx.spawn(async move |this, cx| {
             let details = read.await;
@@ -180,8 +180,11 @@ impl Render for Preview {
         let Some(entry) = &self.target else {
             return pane.items_center().justify_center().text_color(theme.muted_foreground).child("No selection");
         };
-        let fit =
-            |image: ImageSource| div().size_full().p_4().child(img(image).size_full().object_fit(ObjectFit::Contain));
+        // Filling what's left, rather than as tall as its width would make it, so it fits above the
+        // details when they take up most of the pane.
+        let fit = |image: ImageSource| {
+            v_flex().size_full().p_4().child(img(image).flex_1().min_h_0().w_full().object_fit(ObjectFit::Contain))
+        };
         let icon = || {
             let icon = icons::entry(entry, ICON);
             div().size_full().flex().items_center().justify_center().child(icon).into_any_element()
@@ -232,8 +235,12 @@ impl Render for Preview {
             _ => Some(fs::format_size(entry.size)),
         };
         pane.child(div().flex_1().min_h_0().child(content)).child(
+            // Scrolling when there's more than fits under what it holds.
             v_flex()
+                .id("details")
                 .flex_none()
+                .max_h(relative(0.6))
+                .overflow_y_scroll()
                 .gap_1()
                 .p_3()
                 .border_t_1()

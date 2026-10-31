@@ -2,23 +2,19 @@
 //! dimensions, a song's artist, a PDF's pages, or the address a download came from. Each is read
 //! from the start of the file or what macOS keeps about it, without decoding what it holds.
 
-use std::{
-    io::Read as _,
-    path::{Path, PathBuf},
-    time::SystemTime,
-};
+use std::{io::Read as _, path::Path, time::SystemTime};
 
 use objc2_av_foundation::{AVAssetTrack, AVURLAsset};
-use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL};
+use objc2_core_foundation::{
+    CFArray, CFBoolean, CFBundle, CFDictionary, CFNumber, CFRetained, CFString, CFType, CFURL,
+};
 use objc2_core_graphics::{CGPDFBox, CGPDFDictionary, CGPDFDocument, CGPDFPage, CGPDFString, CGPDFStringRef};
 use objc2_core_media::{CMAudioFormatDescriptionGetStreamBasicDescription, CMFormatDescription};
 use objc2_core_text::{
-    CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, kCTFontStyleNameAttribute,
-    kCTFontVersionNameKey,
+    CTFont, CTFontDescriptor, CTFontManagerCreateFontDescriptorsFromURL, kCTFontFamilyNameAttribute,
+    kCTFontStyleNameAttribute, kCTFontVersionNameKey,
 };
-use objc2_foundation::{
-    NSArray, NSBundle, NSData, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString,
-};
+use objc2_foundation::{NSArray, NSData, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString};
 use objc2_image_io::CGImageSource;
 
 use crate::fs::{self, Category, Entry};
@@ -52,21 +48,23 @@ pub fn read(entry: &Entry) -> Details {
     Details { about, created, source: source(path) }
 }
 
-/// An app's version, what it needs and what it's built for, from its Info.plist.
+/// An app's version, what it needs and what it's built for, from its Info.plist. Read anew each
+/// time, as NSBundle keeps what it first read of a bundle, which an update would make out of date.
 fn bundle(path: &Path) -> Vec<Detail> {
-    let Some(bundle) = NSBundle::bundleWithPath(&NSString::from_str(&path.to_string_lossy())) else {
+    let url = CFURL::from_directory_path(path);
+    let Some(info) = url.as_ref().and_then(|url| CFBundle::info_dictionary_for_url(Some(url))) else {
         return Vec::new();
     };
-    let info = |key| {
-        let value = bundle.objectForInfoDictionaryKey(&NSString::from_str(key))?;
-        Some(value.downcast::<NSString>().ok()?.to_string())
-    };
+    let info = Properties(unsafe { CFRetained::cast_unchecked(info) });
     let mut details = Vec::new();
-    details.extend(info("CFBundleShortVersionString").map(|version| ("Version", version)));
-    details.extend(bundle.bundleIdentifier().map(|id| ("Identifier", id.to_string())));
-    details.extend(info("LSMinimumSystemVersion").map(|version| ("Requires", format!("macOS {version}"))));
-    let executable = bundle.executablePath().map(|path| PathBuf::from(path.to_string()));
-    details.extend(executable.and_then(|path| architectures(&path)));
+    details.extend(info.string("CFBundleShortVersionString").map(|version| ("Version", version)));
+    details.extend(info.string("CFBundleIdentifier").map(|id| ("Identifier", id)));
+    details.extend(info.string("LSMinimumSystemVersion").map(|version| ("Requires", format!("macOS {version}"))));
+    let cpus = CFBundle::executable_architectures_for_url(url.as_deref()).map(|cpus| {
+        let cpus = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(cpus) };
+        cpus.iter().filter_map(|cpu| number(&cpu)).map(|cpu| cpu as u32).collect::<Vec<_>>()
+    });
+    details.extend(cpus.and_then(|cpus| built_for(&cpus)));
     details
 }
 
@@ -87,10 +85,14 @@ fn architectures(path: &Path) -> Option<Detail> {
         0xcffaedfe | 0xcefaedfe => vec![word(4)?.swap_bytes()],
         _ => return None,
     };
-    // By CPU type, less the bit saying it's 64-bit.
-    let apple = cpus.iter().any(|cpu| cpu & 0xff == 12);
-    let intel = cpus.iter().any(|cpu| cpu & 0xff == 7);
-    let built = match (apple, intel) {
+    built_for(&cpus)
+}
+
+/// The Macs that run code built for `cpus`, by their Mach-O CPU types.
+fn built_for(cpus: &[u32]) -> Option<Detail> {
+    const ARM64: u32 = 0x0100000c;
+    const X86_64: u32 = 0x01000007;
+    let built = match (cpus.contains(&ARM64), cpus.contains(&X86_64)) {
         (true, true) => "Apple silicon and Intel",
         (true, false) => "Apple silicon",
         (false, true) => "Intel",
@@ -145,7 +147,9 @@ fn image(path: &Path) -> Vec<Detail> {
     let camera = match (tiff("Make"), tiff("Model")) {
         // Most models start with their make already, like "Canon EOS R5", or "NIKON D90" of
         // "NIKON CORPORATION".
-        (Some(make), Some(model)) if !model.starts_with(make.split(' ').next().unwrap_or_default()) => {
+        (Some(make), Some(model))
+            if !model.to_lowercase().starts_with(&make.split(' ').next().unwrap_or_default().to_lowercase()) =>
+        {
             Some(format!("{make} {model}"))
         }
         (make, model) => model.or(make),
@@ -156,11 +160,7 @@ fn image(path: &Path) -> Vec<Detail> {
     let focal_length = exif_number("FocalLength").map(|length| format!("{} mm", tenths(length)));
     details.extend(focal_length.map(|length| ("Focal length", length)));
     details.extend(exif_number("FNumber").map(|number| ("Aperture", format!("f/{}", tenths(number)))));
-    let exposure = exif_number("ExposureTime").map(|time| match time < 1. {
-        true => format!("1/{} s", (1. / time).round()),
-        false => format!("{time} s"),
-    });
-    details.extend(exposure.map(|time| ("Exposure", time)));
+    details.extend(exif_number("ExposureTime").map(|time| ("Exposure", exposure(time))));
     // One rating for each of the camera's sensitivity settings, the first of which it used.
     let iso = exif("ISOSpeedRatings")
         .and_then(|ratings| ratings.downcast::<CFArray>().ok())
@@ -205,6 +205,16 @@ fn string(value: &CFType) -> Option<String> {
     Some(value.downcast_ref::<CFString>()?.to_string())
 }
 
+/// An exposure time as a camera shows it: a fraction of a second, like 1/250 s, or else in
+/// seconds, like 0.8 s.
+fn exposure(time: f64) -> String {
+    let fraction = 1. / time;
+    match time < 1. && (fraction - fraction.round()).abs() < 0.05 {
+        true => format!("1/{} s", fraction.round()),
+        false => format!("{} s", tenths(time)),
+    }
+}
+
 /// A song's or a movie's title and length, and how its picture and sound are encoded.
 fn media(path: &Path) -> Vec<Detail> {
     let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&fs::file_url(path), None) };
@@ -233,11 +243,17 @@ fn media(path: &Path) -> Vec<Detail> {
         details.extend(format(&video).map(|format| ("Video", codec(unsafe { format.media_sub_type() }))));
     }
     if let Some(format) = track("soun").and_then(|audio| format(&audio)) {
-        let mut parts = vec![codec(unsafe { format.media_sub_type() })];
+        let code = unsafe { format.media_sub_type() };
+        let mut parts = vec![codec(code)];
         if let Some(stream) = unsafe { CMAudioFormatDescriptionGetStreamBasicDescription(&format).as_ref() } {
-            // Only what's uncompressed, like PCM or Apple Lossless, has a bit depth.
-            if stream.mBitsPerChannel > 0 {
-                parts.push(format!("{}-bit", stream.mBitsPerChannel));
+            // Lossless audio notes the depth it was made from in its flags, 1 to 4 for 16 to 32 bits.
+            let bits = match (&code.to_be_bytes(), stream.mFormatFlags) {
+                (b"alac" | b"flac", flags @ 1..=4) => [16, 20, 24, 32][flags as usize - 1],
+                _ => stream.mBitsPerChannel,
+            };
+            // Compressed audio has none.
+            if bits > 0 {
+                parts.push(format!("{bits}-bit"));
             }
             parts.push(format!("{} kHz", stream.mSampleRate / 1000.));
             parts.push(match stream.mChannelsPerFrame {
@@ -340,7 +356,7 @@ fn paper(width: f64, height: f64) -> String {
     }
 }
 
-/// A font's family, its styles, version and how many glyphs it has. A collection holds several.
+/// A font's family, its styles, version and how many glyphs it has. A collection holds several fonts.
 fn font(path: &Path) -> Vec<Detail> {
     let Some(descriptors) =
         CFURL::from_file_path(path).and_then(|url| unsafe { CTFontManagerCreateFontDescriptorsFromURL(&url) })
@@ -350,14 +366,26 @@ fn font(path: &Path) -> Vec<Detail> {
     let descriptors = unsafe { CFRetained::cast_unchecked::<CFArray<CTFontDescriptor>>(descriptors) };
     let Some(first) = descriptors.get(0) else { return Vec::new() };
     let first = unsafe { CTFont::with_font_descriptor(&first, 12., std::ptr::null()) };
-    let mut details = vec![("Family", unsafe { first.family_name() }.to_string())];
-    let styles: Vec<String> = descriptors
-        .iter()
-        .filter_map(|descriptor| unsafe { descriptor.attribute(kCTFontStyleNameAttribute) })
-        .filter_map(|style| string(&style))
-        .collect();
-    if !styles.is_empty() {
-        details.push((if styles.len() == 1 { "Style" } else { "Styles" }, styles.join(", ")));
+    let mut details = Vec::new();
+    // A collection can hold several families, each in the same styles.
+    let attributes =
+        unsafe { [("Family", "Families", kCTFontFamilyNameAttribute), ("Style", "Styles", kCTFontStyleNameAttribute)] };
+    for (one, many, attribute) in attributes {
+        let mut names: Vec<String> = Vec::new();
+        for name in descriptors.iter().filter_map(|descriptor| unsafe { descriptor.attribute(attribute) }) {
+            if let Some(name) = string(&name)
+                && !names.contains(&name)
+            {
+                names.push(name);
+            }
+        }
+        // A variable font can name hundreds of styles, which are too many to list.
+        match names.len() {
+            0 => {}
+            1 => details.push((one, names.remove(0))),
+            2..=10 => details.push((many, names.join(", "))),
+            count => details.push((many, count.to_string())),
+        }
     }
     let version = unsafe { first.name(kCTFontVersionNameKey) }.map(|version| version.to_string());
     // Fonts mostly say "Version 1.002", and some more after a semicolon.
@@ -406,6 +434,14 @@ mod tests {
         assert_eq!(paper(595.3, 841.9), "A4");
         assert_eq!(paper(792., 612.), "Letter, landscape");
         assert_eq!(paper(360., 360.), "127 × 127 mm");
+    }
+
+    #[test]
+    fn exposures() {
+        assert_eq!(exposure(0.004), "1/250 s");
+        assert_eq!(exposure(1. / 3.), "1/3 s");
+        assert_eq!(exposure(0.8), "0.8 s");
+        assert_eq!(exposure(2.), "2 s");
     }
 
     #[test]
