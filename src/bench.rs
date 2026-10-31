@@ -26,13 +26,12 @@ use crate::settings::Settings;
 const TARGETS: &[(&str, f64)] = &[
     // Within a frame at 60 Hz.
     ("Arrow keys in a list", 16.),
+    ("Type in the terminal", 16.),
     ("Open the palette", 25.),
     ("Double-click a 10,000-item folder", 25.),
     ("Open a 10,000-item folder with ⌘↓", 25.),
     // Quick Look draws the pictures.
     ("Open a folder of photos in the grid", 50.),
-    // Until the shell's echo is drawn, which waits a refresh behind the frame the key press asks for.
-    ("Type in the terminal", 35.),
     // From Enter until the shell is back at its prompt, with a screenful of colors drawn.
     ("Fill the terminal with colored text", 50.),
 ];
