@@ -2,7 +2,7 @@
 
 # Mu
 
-Mu is a file manager for macOS, made to be snappier and more intuitive than Finder. Everything responds right away, and you can drive it all from the keyboard. Folders open in tabs, you can type a path into the path bar, and a terminal opens where you are.
+Mu is a browser for your Mac, made to be snappier and more intuitive than Finder. It comes with a terminal, a plain text editor, a simple activity monitor and a disk usage viewer. Everything responds right away, and you can drive it all from the keyboard.
 
 ![Mu showing a folder of photos as a grid, with the selected one in the preview](assets/screenshot.png)
 
@@ -14,6 +14,8 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 
 ## Features
 
+### Files
+
 - Tabs and windows, which open again where they were
 - A details list, or a grid with thumbnails, sorted naturally with folders first
 - Type-to-select, ⇧-click and ⌘-click selection, and box selection
@@ -23,12 +25,18 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 - Quick Look, and a preview pane for images, text, documents and folders
 - Disk images laid out as Finder shows them, ready to drag the app onto Applications
 - A shelf to set files aside while you find where they go
-- Terminals as tabs
-- An editor that opens text files in place of TextEdit, and find in folder
-- Activity, for CPU, GPU, memory, network, disks and processes, and Storage, for what takes up the room
-- The Trash with Put Back, disks you can eject, and file servers on the network
+- The Trash with Put Back
 - Other apps' Show in Finder can show files in Mu instead
-- Light and dark themes that follow the system
+
+### The rest of the Mac
+
+- Activity, for CPU, GPU, memory, network, disks and processes
+- Storage, for what takes up the room
+- Disks you can eject, and file servers on the network
+- Terminals as tabs, which open where you are
+- An editor that opens text files in place of TextEdit, and find in folder
+
+Its light and dark themes follow the system.
 
 ## From the command line
 
