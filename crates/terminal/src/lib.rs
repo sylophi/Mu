@@ -56,6 +56,10 @@ pub enum TerminalEvent {
     Exited,
 }
 
+/// Called as output comes in to be drawn, for Mu's bench to wait for it.
+#[cfg(feature = "bench")]
+pub static OUTPUT_LANDED: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
 #[derive(Clone)]
 struct Listener {
     events: smol::channel::Sender<AlacEvent>,
@@ -227,6 +231,12 @@ impl TerminalView {
         for event in events {
             match event {
                 AlacEvent::Wakeup | AlacEvent::MouseCursorDirty | AlacEvent::CursorBlinkingChange => {
+                    #[cfg(feature = "bench")]
+                    if matches!(event, AlacEvent::Wakeup)
+                        && let Some(landed) = OUTPUT_LANDED.get()
+                    {
+                        landed();
+                    }
                     dirty = true;
                 }
                 AlacEvent::Title(title) => {

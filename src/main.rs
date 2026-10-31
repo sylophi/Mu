@@ -3,6 +3,8 @@
 
 mod activity;
 mod assets;
+#[cfg(feature = "bench")]
+mod bench;
 mod browser;
 mod drag;
 mod editor;
@@ -40,6 +42,8 @@ fn main() -> ExitCode {
     if let Some(app) = link::command() {
         return link::run(&app);
     }
+    #[cfg(feature = "bench")]
+    bench::prepare();
     // Tabs other apps ask for with a link, or the `mu` command does. What's asked at launch can come
     // before Mu gets going.
     let (asked, opened) = smol::channel::unbounded();
@@ -83,6 +87,8 @@ fn main() -> ExitCode {
         })
         .detach();
         cx.activate(true);
+        #[cfg(feature = "bench")]
+        bench::start(cx);
         // The menu bar comes after the window: setting it the first time has macOS load its text
         // input items for the Edit menu, which can take a while.
         cx.spawn(async |cx| cx.update(|cx| cx.set_menus(workspace::actions::menus(cx)))).detach();

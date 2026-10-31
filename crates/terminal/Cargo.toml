@@ -10,5 +10,9 @@ alacritty_terminal = "0.26"
 libc.workspace = true
 smol.workspace = true
 
+[features]
+# Lets Mu's bench know when output comes in (OUTPUT_LANDED).
+bench = []
+
 [dev-dependencies]
 serde_json.workspace = true

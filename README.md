@@ -71,6 +71,7 @@ The rest are in the menus and the command palette.
 ```sh
 make run        # runs Mu
 make app        # builds dist/Mu.app
+make bench      # times how soon Mu answers, as CI does for each change
 ```
 
 It needs Rust and Xcode. `make` also applies Mu's patches to GPUI (`patches/`) before it builds, so a plain `cargo` command needs a `make patched` first.
