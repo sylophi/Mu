@@ -582,9 +582,12 @@ impl EntityInputHandler for TerminalView {
     }
 
     fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
-        self.marked_text = None;
+        // Only to drop the marked text: the shell's echo draws what's typed, and a frame drawn now
+        // would hold that back a refresh.
+        if self.marked_text.take().is_some() {
+            cx.notify();
+        }
         self.write(text.as_bytes().to_vec(), cx);
-        cx.notify();
     }
 
     fn replace_and_mark_text_in_range(
