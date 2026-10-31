@@ -1,11 +1,92 @@
-GPUI, gpui-pre 0.3.9 as published (a snapshot of Zed at 93d7456), with the change Mu needs until a
-gpui-pre snapshot has it:
+GPUI, gpui-pre 0.3.9 as published (a snapshot of Zed at 93d7456), with the changes Mu needs until a
+gpui-pre snapshot has them:
 
 - A window that changes between the mouse and the keyboard draws all of itself again after the
   event that changes it, not before (`modality_changed` in `window.rs`). A key press into a window
   that needs drawing draws it before it's dispatched, so the first key press after the mouse drew
   the whole window twice.
+- Text cut in the middle keeps its last word and the extension after it, in between a third and
+  four fifths of the room, and the start gets the rest (`should_truncate_line_middle` in
+  `line_wrapper.rs`). A fixed third often fit only the extension, so numbered names like
+  "IMG_0012.jpeg" all looked alike.
 
+diff --git a/src/text_system/line_wrapper.rs b/src/text_system/line_wrapper.rs
+index ca821bb..080f062 100644
+--- a/src/text_system/line_wrapper.rs
++++ b/src/text_system/line_wrapper.rs
+@@ -263,19 +263,14 @@ impl LineWrapper {
+             return Some((0, line.len()));
+         }
+ 
+-        let front_budget = content_budget * (2.0 / 3.0);
+-        let back_budget = content_budget - front_budget;
+-
+-        let mut front_width = px(0.);
+-        let mut front_end_ix = 0usize;
+-        for (ix, c) in line.char_indices() {
+-            let char_width = self.width_for_char(c);
+-            if front_width + char_width > front_budget {
+-                break;
+-            }
+-            front_width += char_width;
+-            front_end_ix = ix + c.len_utf8();
+-        }
++        // The end keeps its last word and the extension after it, like "…0012.jpeg", which
++        // tells numbered names apart. It takes between a third and four fifths of the room, and
++        // the start gets the rest.
++        let tail_width: Pixels = line[Self::tail_start(line)..]
++            .chars()
++            .map(|c| self.width_for_char(c))
++            .sum();
++        let back_budget = tail_width.clamp(content_budget / 3.0, content_budget * 0.8);
+ 
+         let mut back_width = px(0.);
+         let mut back_start_ix = line.len();
+@@ -288,6 +283,18 @@ impl LineWrapper {
+             back_start_ix = ix;
+         }
+ 
++        let front_budget = content_budget - back_width;
++        let mut front_width = px(0.);
++        let mut front_end_ix = 0usize;
++        for (ix, c) in line.char_indices() {
++            let char_width = self.width_for_char(c);
++            if front_width + char_width > front_budget {
++                break;
++            }
++            front_width += char_width;
++            front_end_ix = ix + c.len_utf8();
++        }
++
+         if front_end_ix >= back_start_ix {
+             return Some((0, line.len()));
+         }
+@@ -295,6 +302,25 @@ impl LineWrapper {
+         Some((front_end_ix, back_start_ix))
+     }
+ 
++    /// Where `line`'s last word starts, with the extension after it: "0012.jpeg" in
++    /// "IMG_0012.jpeg", "(3).png" in "photo (3).png", "Support" in "Application Support". A line
++    /// that's one word throughout keeps just its extension.
++    fn tail_start(line: &str) -> usize {
++        let is_break = |c: char| c.is_whitespace() || matches!(c, '_' | '-' | '/');
++        let end = match line.rfind('.') {
++            Some(ix) if ix > 0 && !line[ix..].contains(is_break) => ix,
++            _ => line.len(),
++        };
++        match line[..end]
++            .trim_end_matches(is_break)
++            .trim_end_matches(|c| !is_break(c))
++            .len()
++        {
++            0 => end,
++            start => start,
++        }
++    }
++
+     /// Truncate a line of text to the given width with this wrapper's font and font size.
+     pub fn truncate_line<'a>(
+         &mut self,
 diff --git a/src/window.rs b/src/window.rs
 index 1214b03..293c97d 100644
 --- a/src/window.rs
