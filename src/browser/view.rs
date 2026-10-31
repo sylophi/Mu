@@ -442,7 +442,7 @@ impl Browser {
         let rename = self.rename.as_ref().filter(|rename| rename.name == entry.name);
         let name = h_flex().min_w_0().gap_1().when(dimmed, |el| el.opacity(0.6)).map(|el| match rename {
             Some(rename) => el.flex_1().child(self.render_rename(rename, cx).flex_1()),
-            // Cut in the middle, so a long name keeps its extension.
+            // Cut in the middle, so a long name keeps its end, like "…0012.jpeg".
             None => el
                 .child(div().min_w_0().truncate().text_ellipsis_middle().child(one_line(&entry.name)))
                 .children(cloud_mark(entry, cx)),
