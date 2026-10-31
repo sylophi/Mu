@@ -18,23 +18,23 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 
 - Tabs and windows, which open again where they were
 - A details list, or a grid with thumbnails, sorted naturally with folders first
-- Type-to-select, ⇧-click and ⌘-click selection, and box selection
-- A path bar to type into, which completes folder names and suggests the ones you go to most
 - Copy, move, rename, compress and extract, with undo and redo for every change
-- Folders that merge when copied onto ones with the same name, and a choice for each file that's in the way
+- A path bar to type into, which completes folder names and suggests the ones you go to most
 - Quick Look, and a preview pane for images, text, documents and folders
-- Disk images laid out as Finder shows them, ready to drag the app onto Applications
-- A shelf to set files aside while you find where they go
+- Type-to-select, ⇧-click and ⌘-click selection, and box selection
 - The Trash with Put Back
+- Folders that merge when copied onto ones with the same name, and a choice for each file that's in the way
+- A shelf to set files aside while you find where they go
 - Other apps' Show in Finder can show files in Mu instead
+- Disk images laid out as Finder shows them, ready to drag the app onto Applications
 
 ### The rest of the Mac
 
+- Terminals as tabs, which open where you are
+- An editor that opens text files in place of TextEdit, and find in folder
 - Activity, for CPU, GPU, memory, network, disks and processes
 - Storage, for what takes up the room
 - Disks you can eject, and file servers on the network
-- Terminals as tabs, which open where you are
-- An editor that opens text files in place of TextEdit, and find in folder
 
 Its light and dark themes follow the system.
 
