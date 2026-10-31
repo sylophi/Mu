@@ -2,8 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::component::{ActiveTheme as _, v_flex};
-use gpui_kit::{prelude::FluentBuilder as _, *};
+use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_kit::*;
 use mu_terminal::{TerminalEvent, TerminalView};
 
 use super::{
@@ -366,12 +366,20 @@ impl Workspace {
             // in the filter, reuses what the tab drew last.
             item => item.view().cached(StyleRefinement::default().size_full()).into_any_element(),
         };
-        v_flex()
-            .size_full()
-            .child(self.render_tab_bar(cx))
-            .when_some(self.active_folder().cloned(), |el, browser| el.child(self.render_toolbar(&browser, window, cx)))
-            .child(div().flex_1().min_h_0().child(content))
-            .into_any_element()
+        let content = div().flex_1().min_h_0().child(content);
+        // A folder has its toolbar over it, and the preview beside both, under the tab bar.
+        let tab = match self.active_folder() {
+            Some(browser) => h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    v_flex().flex_1().min_w_0().h_full().child(self.render_toolbar(browser, window, cx)).child(content),
+                )
+                .children(self.render_preview(window, cx))
+                .into_any_element(),
+            None => content.into_any_element(),
+        };
+        v_flex().size_full().child(self.render_tab_bar(cx)).child(tab).into_any_element()
     }
 
     pub(super) fn with_folder(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut Browser, &mut Context<Browser>)) {

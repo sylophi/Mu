@@ -1,5 +1,5 @@
-//! The docks either side of the pane, the sidebar and the preview: showing and hiding them,
-//! dragging their edges, and zooming the pane past them.
+//! The docks, the sidebar beside the pane and the preview beside a folder in it: showing and hiding
+//! them, dragging their edges, and zooming the pane past them.
 
 use std::ops::Range;
 
@@ -52,25 +52,17 @@ const SIDEBAR_WIDTHS: Range<Pixels> = px(140.)..px(420.);
 const PREVIEW_WIDTHS: Range<Pixels> = px(200.)..px(800.);
 
 impl Workspace {
-    /// The pane between the docks, or by itself while zoomed.
+    /// The sidebar beside the pane, or the pane by itself while zoomed.
     pub(super) fn render_main(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.docks.zoomed {
             return self.render_center(window, cx);
         }
-        let show_sidebar = self.docks.sidebar;
         let widths = self.docks.widths();
-        // The preview is for folders, and steps aside while showing it would leave the pane too narrow
-        // to use.
-        let sidebar = if show_sidebar { widths.sidebar } else { px(0.) };
-        let show_preview = self.docks.preview
-            && self.active_folder().is_some()
-            && window.viewport_size().width - sidebar - widths.preview >= MIN_PANE_WIDTH;
-        let border = cx.theme().border;
         // The docks keep their widths as the window's resized, and the pane takes up the rest.
         // Only when the window's too narrow for that do they give way, down to their least.
         h_flex()
             .size_full()
-            .when(show_sidebar, |el| {
+            .when(self.docks.sidebar, |el| {
                 el.child(
                     div()
                         .relative()
@@ -78,27 +70,12 @@ impl Workspace {
                         .w(widths.sidebar)
                         .min_w(SIDEBAR_WIDTHS.start)
                         .border_r_1()
-                        .border_color(border)
+                        .border_color(cx.theme().border)
                         .child(self.sidebar.clone().cached(StyleRefinement::default().size_full()))
                         .child(self.render_dock_edge(Dock::Sidebar, cx)),
                 )
             })
             .child(div().flex_1().min_w(px(240.)).h_full().child(self.render_center(window, cx)))
-            .when(show_preview, |el| {
-                // Cached: it only changes when the selection does, not on every hover elsewhere.
-                let preview = self.preview.clone().cached(StyleRefinement::default().size_full());
-                el.child(
-                    div()
-                        .relative()
-                        .h_full()
-                        .w(widths.preview)
-                        .min_w(PREVIEW_WIDTHS.start)
-                        .border_l_1()
-                        .border_color(border)
-                        .child(preview)
-                        .child(self.render_dock_edge(Dock::Preview, cx)),
-                )
-            })
             .on_drag_move(cx.listener(|this, event: &DragMoveEvent<Dock>, _, cx| {
                 let (bounds, x) = (event.bounds, event.event.position.x);
                 let mut widths = this.docks.widths();
@@ -116,6 +93,29 @@ impl Workspace {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::finish_dock_drag))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::finish_dock_drag))
             .into_any_element()
+    }
+
+    /// The preview beside a folder, which steps aside while zoomed, or while showing it would leave
+    /// the pane too narrow to use.
+    pub(super) fn render_preview(&self, window: &Window, cx: &Context<Self>) -> Option<AnyElement> {
+        let widths = self.docks.widths();
+        let sidebar = if self.docks.sidebar { widths.sidebar } else { px(0.) };
+        let shown = self.docks.preview
+            && !self.docks.zoomed
+            && window.viewport_size().width - sidebar - widths.preview >= MIN_PANE_WIDTH;
+        shown.then(|| {
+            div()
+                .relative()
+                .h_full()
+                .w(widths.preview)
+                .min_w(PREVIEW_WIDTHS.start)
+                .border_l_1()
+                .border_color(cx.theme().border)
+                // Cached: it only changes when the selection does, not on every hover elsewhere.
+                .child(self.preview.clone().cached(StyleRefinement::default().size_full()))
+                .child(self.render_dock_edge(Dock::Preview, cx))
+                .into_any_element()
+        })
     }
 
     pub(super) fn toggle_zoom(&mut self, cx: &mut Context<Self>) {
