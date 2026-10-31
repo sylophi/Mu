@@ -46,10 +46,13 @@ libc.workspace = true
 notify = "=8.2.0"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSBitmapImageRep", "NSEvent", "NSGraphicsContext", "NSImage", "NSImageRep", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSWindow", "NSWorkspace", "objc2-uniform-type-identifiers"] }
+objc2-av-foundation = { version = "0.3", default-features = false, features = ["std", "AVAsset", "AVAssetTrack", "AVMetadataItem", "AVMediaFormat", "AVMetadataFormat", "objc2-core-media", "objc2-core-foundation"] }
 objc2-core-foundation = { version = "0.3", features = ["block2"] }
 objc2-core-graphics = "0.3"
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMFormatDescription", "CMTime", "objc2-core-audio-types"] }
 objc2-core-text = "0.3"
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSData", "NSDictionary", "NSError", "NSFileManager", "NSPathUtilities", "NSProcessInfo", "NSString", "NSURL"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource"] }
 objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-core-graphics", "QLThumbnailGenerationRequest", "QLThumbnailGenerator", "QLThumbnailRepresentation"] }
 objc2-quick-look-ui = { version = "0.3", default-features = false, features = ["std", "QLPreviewItem", "QLPreviewPanel", "objc2-app-kit"] }
 objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTCoreTypes", "UTType"] }

@@ -1,15 +1,13 @@
 //! The preview pane: the selected item's contents and its details. Images and text show as they
 //! are, Quick Look pictures most other files, like a PDF's first page or a frame of a video, and
-//! folders and apps show their icons.
+//! folders and apps show their icons. Below go its details.
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+mod details;
+
+use std::{path::PathBuf, sync::Arc};
 
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::*;
-use objc2_foundation::{NSBundle, NSString};
 
 use crate::{
     browser::Browser,
@@ -17,6 +15,7 @@ use crate::{
     icons,
     thumbnails::Cache,
 };
+use details::Details;
 
 /// Enough text to fill the pane without reading a whole log file.
 const TEXT_LIMIT: u64 = 48 * 1024;
@@ -51,14 +50,14 @@ pub struct Preview {
     browser: Option<(WeakEntity<Browser>, Subscription)>,
     target: Option<Entry>,
     content: Content,
-    /// The app's version, when it's an app.
-    version: Option<SharedString>,
+    details: Details,
     pictures: Cache,
     /// Where the text is scrolled to. Each item starts at its top.
     scroll: UniformListScrollHandle,
     /// Whether the pane is shown. While it's hidden, there's no reading files.
     shown: bool,
     _load: Task<()>,
+    _details: Task<()>,
 }
 
 impl Preview {
@@ -68,11 +67,12 @@ impl Preview {
             browser: None,
             target: None,
             content: Content::None,
-            version: None,
+            details: Details::default(),
             pictures: Cache::new(PICTURE),
             scroll: UniformListScrollHandle::new(),
             shown,
             _load: Task::ready(()),
+            _details: Task::ready(()),
         }
     }
 
@@ -104,11 +104,26 @@ impl Preview {
         }
         self.target = entry;
         self.content = Content::None;
-        self.version = None;
+        self.details = Details::default();
+        // What's still loading for the item before would land on this one.
+        (self._load, self._details) = (Task::ready(()), Task::ready(()));
         self.scroll = UniformListScrollHandle::new();
         self.pictures.trim(None, None, cx);
         cx.notify();
         let Some(entry) = self.target.clone() else { return };
+        // Its details come in on their own, as some take longer to read than what it holds.
+        let read = cx.background_spawn({
+            let entry = entry.clone();
+            async move { objc2::rc::autoreleasepool(|_| details::read(&entry)) }
+        });
+        self._details = cx.spawn(async move |this, cx| {
+            let details = read.await;
+            this.update(cx, |this, cx| {
+                this.details = details;
+                cx.notify();
+            })
+            .ok();
+        });
         // An alias shows what it leads to.
         let path = entry.target().to_path_buf();
         let extension = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
@@ -122,18 +137,17 @@ impl Preview {
         let load = cx.background_spawn(async move {
             if entry.folder {
                 let count = std::fs::read_dir(&path).map(|dir| dir.count());
-                return (count.map(Content::Folder).unwrap_or(Content::None), None);
+                return count.map(Content::Folder).unwrap_or(Content::None);
             }
             if entry.package {
-                return (Content::Icon, app_version(&path));
+                return Content::Icon;
             }
-            (text(&entry).unwrap_or(Content::Picture), None)
+            text(&entry).unwrap_or(Content::Picture)
         });
         self._load = cx.spawn(async move |this, cx| {
-            let (content, version) = load.await;
+            let content = load.await;
             this.update(cx, |this, cx| {
                 this.content = content;
-                this.version = version;
                 cx.notify();
             })
             .ok();
@@ -155,13 +169,6 @@ fn text(entry: &Entry) -> Option<Content> {
     Some(Content::Text(lines, widest))
 }
 
-/// An app's version, as its About window shows it.
-fn app_version(path: &Path) -> Option<SharedString> {
-    let bundle = NSBundle::bundleWithPath(&NSString::from_str(&path.to_string_lossy()))?;
-    let version = bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
-    Some(version.downcast::<NSString>().ok()?.to_string().into())
-}
-
 impl Render for Preview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let picture = match (&self.content, &self.target) {
@@ -173,8 +180,11 @@ impl Render for Preview {
         let Some(entry) = &self.target else {
             return pane.items_center().justify_center().text_color(theme.muted_foreground).child("No selection");
         };
-        let fit =
-            |image: ImageSource| div().size_full().p_4().child(img(image).size_full().object_fit(ObjectFit::Contain));
+        // Filling what's left, rather than as tall as its width would make it, so it fits above the
+        // details when they take up most of the pane.
+        let fit = |image: ImageSource| {
+            v_flex().size_full().p_4().child(img(image).flex_1().min_h_0().w_full().object_fit(ObjectFit::Contain))
+        };
         let icon = || {
             let icon = icons::entry(entry, ICON);
             div().size_full().flex().items_center().justify_center().child(icon).into_any_element()
@@ -211,11 +221,13 @@ impl Render for Preview {
             Content::Folder(_) | Content::Icon => icon(),
             Content::None => div().size_full().into_any_element(),
         };
+        // Values wrap, so a long one, like a lens's model, shows in full.
         let detail = |label: &'static str, value: String| {
             h_flex()
+                .items_start()
                 .gap_2()
-                .child(div().w(px(72.)).flex_none().text_color(theme.muted_foreground).child(label))
-                .child(div().min_w_0().truncate().child(value))
+                .child(div().w(px(80.)).flex_none().text_color(theme.muted_foreground).child(label))
+                .child(div().min_w_0().child(value))
         };
         let size = match &self.content {
             Content::Folder(count) => Some(fs::count(*count, "item", "items")),
@@ -223,17 +235,23 @@ impl Render for Preview {
             _ => Some(fs::format_size(entry.size)),
         };
         pane.child(div().flex_1().min_h_0().child(content)).child(
+            // Scrolling when there's more than fits under what it holds.
             v_flex()
+                .id("details")
                 .flex_none()
+                .max_h(relative(0.6))
+                .overflow_y_scroll()
                 .gap_1()
                 .p_3()
                 .border_t_1()
                 .border_color(theme.border)
                 .child(div().pb_1().font_medium().child(entry.name.clone()))
                 .child(detail("Kind", entry.kind.to_string()))
-                .children(self.version.as_ref().map(|version| detail("Version", version.to_string())))
                 .children(size.map(|size| detail("Size", size)))
+                .children(self.details.about.iter().map(|(label, value)| detail(label, value.clone())))
+                .children(self.details.created.map(|time| detail("Created", fs::format_date(time))))
                 .children(entry.modified.map(|time| detail("Modified", fs::format_date(time))))
+                .children(self.details.source.as_ref().map(|source| detail("Where from", source.clone())))
                 .child(detail("Where", entry.path.parent().map(|p| p.display().to_string()).unwrap_or_default())),
         )
     }

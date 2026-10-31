@@ -13,7 +13,13 @@ mod trash;
 mod undo;
 mod volumes;
 
-use std::{ffi::CString, io, os::unix::ffi::OsStrExt as _, path::Path, process::Command};
+use std::{
+    ffi::{CStr, CString},
+    io,
+    os::unix::ffi::OsStrExt as _,
+    path::Path,
+    process::Command,
+};
 
 use anyhow::{Result, bail};
 
@@ -41,6 +47,16 @@ use trash::{clear_origin, trash_one};
 
 pub fn c_path(path: &Path) -> io::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)
+}
+
+/// The extended attribute `name` of the file at `path`, with `options` like `XATTR_NOFOLLOW`.
+pub fn xattr(path: &Path, name: &CStr, options: libc::c_int) -> Option<Vec<u8>> {
+    let path = c_path(path).ok()?;
+    let size = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, options) };
+    let mut value = vec![0u8; usize::try_from(size).ok().filter(|&size| size > 0)?];
+    let read =
+        unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, options) };
+    (read == size).then_some(value)
 }
 
 pub fn file_url(path: &Path) -> Retained<NSURL> {

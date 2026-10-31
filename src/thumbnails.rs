@@ -22,7 +22,10 @@ use objc2_quick_look_thumbnailing::{
     QLThumbnailRepresentation,
 };
 
-use crate::{fs::Entry, icons};
+use crate::{
+    fs::{Category, Entry},
+    icons,
+};
 /// The pictures a view has asked for at one size. Each is made once, and again when its file changes.
 pub struct Cache {
     size: Pixels,
@@ -48,8 +51,8 @@ impl Cache {
         Self { size, framed: false, pictures: HashMap::new(), asked: 0 }
     }
 
-    /// Pictures framed the way Finder's icon view shows them: a document as a page, a photo with
-    /// rounded corners.
+    /// Pictures framed the way Finder's icon view shows them, like a document as a page. Images
+    /// show as they are.
     pub fn framed(size: Pixels) -> Self {
         Self { framed: true, ..Self::new(size) }
     }
@@ -77,7 +80,9 @@ impl Cache {
             return picture.image.clone();
         }
         let path = path.to_path_buf();
-        let picture = make(&path, self.size, window.scale_factor(), self.framed);
+        // Quick Look frames an image on white, which would hide what's see-through in it.
+        let framed = self.framed && entry.category != Category::Image;
+        let picture = make(&path, self.size, window.scale_factor(), framed);
         let slot = Picture { made: modified, image: None, asked: self.asked };
         if let Some(Picture { image: Some(stale), .. }) = self.pictures.insert(path.clone(), slot) {
             cx.drop_image(stale, Some(window));

@@ -18,7 +18,7 @@ use objc2_foundation::NSFileManager;
 use super::{
     Done, Progress, Undo,
     admin::{self, Step},
-    c_path, delete_path, disk_name, display_name, each, file_url, same_volume, trash_dir, unique_path,
+    c_path, delete_path, disk_name, display_name, each, file_url, same_volume, trash_dir, unique_path, xattr,
 };
 
 /// What's in the Trash, leaving out the files Finder keeps there.
@@ -35,14 +35,7 @@ const ORIGIN: &CStr = c"io.github.sylophi.mu.origin";
 
 /// Where `path`, in the Trash, was before Mu moved it there.
 pub fn origin(path: &Path) -> Option<PathBuf> {
-    let path = c_path(path).ok()?;
-    let size =
-        unsafe { libc::getxattr(path.as_ptr(), ORIGIN.as_ptr(), std::ptr::null_mut(), 0, 0, libc::XATTR_NOFOLLOW) };
-    let mut value = vec![0u8; usize::try_from(size).ok().filter(|&size| size > 0)?];
-    let read = unsafe {
-        libc::getxattr(path.as_ptr(), ORIGIN.as_ptr(), value.as_mut_ptr().cast(), value.len(), 0, libc::XATTR_NOFOLLOW)
-    };
-    (read == size).then(|| PathBuf::from(OsString::from_vec(value)))
+    xattr(path, ORIGIN, libc::XATTR_NOFOLLOW).map(|value| PathBuf::from(OsString::from_vec(value)))
 }
 
 /// Notes on `path` where it came from. Should that fail, it just can't be put back later.
