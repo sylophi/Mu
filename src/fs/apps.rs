@@ -12,6 +12,12 @@ use objc2_foundation::{NSArray, NSData, NSURL, NSURLBookmarkResolutionOptions};
 
 use super::{file_url, natural_cmp, read_text};
 
+/// The app a program belongs to: the outermost `.app` on its path, so a helper inside an app's
+/// bundle goes by that app.
+pub fn app_bundle(exe: &Path) -> Option<PathBuf> {
+    exe.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
+}
+
 /// The apps that can open all of `paths`, as (name, app), with the first one's default app first.
 pub fn apps_to_open(paths: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let workspace = NSWorkspace::sharedWorkspace();

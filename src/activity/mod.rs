@@ -4,10 +4,7 @@
 pub mod monitor;
 mod registry;
 
-use std::{
-    cmp::Ordering,
-    path::{Path, PathBuf},
-};
+use std::cmp::Ordering;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -25,7 +22,7 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
-    fs::format_size,
+    fs::{self, format_size},
     icons,
     theme::{self, Toasts as _},
     workspace::TabEvent,
@@ -585,12 +582,6 @@ impl Process {
     }
 }
 
-/// The app a program belongs to: the outermost `.app` on its path, so a helper inside an app's
-/// bundle gets that app's icon.
-fn app_bundle(exe: &Path) -> Option<PathBuf> {
-    exe.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
-}
-
 impl Port {
     fn matches(&self, query: &str) -> bool {
         query.is_empty() || self.process.to_lowercase().contains(query) || self.port.to_string().contains(query)
@@ -693,7 +684,7 @@ impl TableDelegate for Processes {
         let cell = div().w_full().truncate();
         match column {
             0 => {
-                let icon = process.exe.as_deref().and_then(app_bundle).map(|app| icons::item(&app, true, px(16.)));
+                let icon = process.exe.as_deref().and_then(fs::app_bundle).map(|app| icons::item(&app, true, px(16.)));
                 h_flex()
                     .w_full()
                     .gap_1p5()

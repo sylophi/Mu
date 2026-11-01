@@ -4,7 +4,7 @@
 
 mod details;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::*;
@@ -51,6 +51,8 @@ pub struct Preview {
     target: Option<Entry>,
     content: Content,
     details: Details,
+    /// The processes that have it open, by name.
+    in_use_by: Option<String>,
     pictures: Cache,
     /// Where the text is scrolled to. Each item starts at its top.
     scroll: UniformListScrollHandle,
@@ -58,6 +60,7 @@ pub struct Preview {
     shown: bool,
     _load: Task<()>,
     _details: Task<()>,
+    _in_use_by: Task<()>,
 }
 
 impl Preview {
@@ -68,11 +71,13 @@ impl Preview {
             target: None,
             content: Content::None,
             details: Details::default(),
+            in_use_by: None,
             pictures: Cache::new(PICTURE),
             scroll: UniformListScrollHandle::new(),
             shown,
             _load: Task::ready(()),
             _details: Task::ready(()),
+            _in_use_by: Task::ready(()),
         }
     }
 
@@ -102,11 +107,16 @@ impl Preview {
         if self.target.as_ref().map(key) == entry.as_ref().map(key) {
             return;
         }
+        // The same item changed, like a download as it comes in, is still in use by the same.
+        let moved = self.target.as_ref().map(|e| &e.path) != entry.as_ref().map(|e| &e.path);
         self.target = entry;
         self.content = Content::None;
         self.details = Details::default();
         // What's still loading for the item before would land on this one.
         (self._load, self._details) = (Task::ready(()), Task::ready(()));
+        if moved {
+            (self.in_use_by, self._in_use_by) = (None, Task::ready(()));
+        }
         self.scroll = UniformListScrollHandle::new();
         self.pictures.trim(None, None, cx);
         cx.notify();
@@ -126,6 +136,24 @@ impl Preview {
         });
         // An alias shows what it leads to.
         let path = entry.target().to_path_buf();
+        // Looking through every process's open files takes tens of milliseconds, so it waits for
+        // the selection to settle, rather than running for each item arrowed past. macOS's own
+        // processes don't count, as one is Quick Look, making this pane's picture of it.
+        if moved {
+            self._in_use_by = cx.spawn({
+                let path = path.clone();
+                async move |this, cx| {
+                    cx.background_executor().timer(Duration::from_millis(150)).await;
+                    let mut holders = cx.background_spawn(async move { fs::holders(&path, false) }).await;
+                    holders.retain(|holder| !holder.is_system());
+                    this.update(cx, |this, cx| {
+                        this.in_use_by = (!holders.is_empty()).then(|| fs::names(&holders));
+                        cx.notify();
+                    })
+                    .ok();
+                }
+            });
+        }
         let extension = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
         // Reading what's only in iCloud would download it, so Quick Look pictures it instead.
         let image =
@@ -252,6 +280,7 @@ impl Render for Preview {
                 .children(self.details.created.map(|time| detail("Created", fs::format_date(time))))
                 .children(entry.modified.map(|time| detail("Modified", fs::format_date(time))))
                 .children(self.details.source.as_ref().map(|source| detail("Where from", source.clone())))
+                .children(self.in_use_by.clone().map(|names| detail("In use by", names)))
                 .child(detail("Where", entry.path.parent().map(|p| p.display().to_string()).unwrap_or_default())),
         )
     }
