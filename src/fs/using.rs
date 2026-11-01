@@ -85,11 +85,7 @@ fn executable(pid: u32) -> Option<PathBuf> {
 
 /// Their names as a sentence would have them, like "Photos, Preview and tail".
 pub fn names(holders: &[Holder]) -> String {
-    match distinct(holders).split_last() {
-        Some((last, [])) => last.to_string(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    }
+    super::listed(&distinct(holders))
 }
 
 /// Their names, each once, as an app can have several processes at it.

@@ -181,7 +181,7 @@ impl Workspace {
         window.on_window_should_close(cx, move |window, cx| {
             workspace
                 .update(cx, |this, cx| {
-                    let close = this.unsaved(cx).is_empty();
+                    let close = this.unsaved(cx).is_empty() && this.running(cx).is_empty();
                     match close {
                         true => this.save_if_last(window, cx),
                         false => this.close_window(window, cx),

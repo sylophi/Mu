@@ -8,7 +8,7 @@ use mu_terminal::{TerminalEvent, TerminalView};
 
 use super::{
     Item, TabEvent, Workspace, go,
-    windows::{confirm_discard, open_window},
+    windows::{confirm_discard, confirm_running, open_window},
 };
 use crate::{
     browser::Browser,
@@ -202,13 +202,18 @@ impl Workspace {
         self.activate((self.items.active() as isize + delta).rem_euclid(len) as usize, window, cx);
     }
 
-    /// Closes a tab, asking first when it's an editor with unsaved changes.
+    /// Closes a tab, asking first when it's an editor with unsaved changes or a terminal running
+    /// something.
     pub(super) fn close_item(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let editor = match self.position(id).map(|ix| &self.items[ix]) {
-            Some(Item::Editor(editor)) if editor.read(cx).is_dirty() => editor.clone(),
+        let confirm = match self.position(id).map(|ix| &self.items[ix]) {
+            Some(Item::Editor(editor)) if editor.read(cx).is_dirty() => {
+                confirm_discard(vec![editor.clone()], window, cx)
+            }
+            Some(Item::Terminal(terminal)) if let Some(name) = terminal.read(cx).running() => {
+                confirm_running(vec![name], "Close this terminal?", "Close", window, cx)
+            }
             _ => return self.remove_item(id, window, cx),
         };
-        let confirm = confirm_discard(vec![editor], window, cx);
         cx.spawn_in(window, async move |this, cx| {
             if confirm.await {
                 this.update_in(cx, |this, window, cx| this.remove_item(id, window, cx)).ok();

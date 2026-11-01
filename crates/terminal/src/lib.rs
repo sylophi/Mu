@@ -12,7 +12,7 @@ use std::{
     ffi::{CStr, OsStr},
     ops::Range,
     os::{fd::AsRawFd as _, unix::ffi::OsStrExt as _},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -108,6 +108,8 @@ pub struct TerminalView {
     /// Our own handle on the PTY, to find what runs in the foreground and where. The event loop
     /// closes its handle when the shell exits, and that descriptor number can then be reused.
     pty_file: std::fs::File,
+    /// The process started on the PTY: the shell, or on macOS `login`, which runs it.
+    child: libc::pid_t,
     /// Where the shell started.
     cwd: PathBuf,
     title: Option<String>,
@@ -149,6 +151,7 @@ impl TerminalView {
         let options = tty::Options { shell: None, working_directory: Some(cwd.clone()), drain_on_exit: true, env };
         let pty = tty::new(&options, window_size(&geometry), 0).expect("failed to open a PTY");
         let pty_file = pty.file().try_clone().expect("failed to duplicate the PTY");
+        let child = pty.child().id() as libc::pid_t;
         let event_loop =
             EventLoop::new(term.clone(), listener, pty, true, false).expect("failed to start the terminal event loop");
         let notifier = Notifier(event_loop.channel());
@@ -172,6 +175,7 @@ impl TerminalView {
             redraw_pending,
             focus_handle: cx.focus_handle(),
             pty_file,
+            child,
             cwd,
             title: None,
             geometry,
@@ -196,19 +200,47 @@ impl TerminalView {
     /// The current folder of the shell (or whatever runs in the foreground), asked of the kernel
     /// since not every shell reports it.
     pub fn cwd(&self) -> PathBuf {
+        let info =
+            self.foreground().and_then(|pid| pid_info::<libc::proc_vnodepathinfo>(pid, libc::PROC_PIDVNODEPATHINFO));
+        match info {
+            Some(info) => {
+                let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+                PathBuf::from(OsStr::from_bytes(path.to_bytes()))
+            }
+            None => self.cwd.clone(),
+        }
+    }
+
+    /// The name of what runs in the foreground in place of the shell, which closing the terminal
+    /// would stop.
+    pub fn running(&self) -> Option<String> {
+        // Every process in the job: the first in a pipeline leads it, and can be gone while the rest
+        // run.
+        let mut pids = [0 as libc::pid_t; 64];
+        let count =
+            unsafe { libc::proc_listpgrppids(self.foreground()?, pids.as_mut_ptr().cast(), size_of_val(&pids) as i32) };
+        pids.get(..count.max(0) as usize)?.iter().find_map(|&pid| {
+            // The short info, unlike the full, is there for processes of other users, like sudo's.
+            let info = pid_info::<libc::proc_bsdshortinfo>(pid, libc::PROC_PIDT_SHORTBSDINFO)?;
+            // The shell is the process started, or the one `login` started. What it runs is its child.
+            if pid == self.child || info.pbsi_ppid as libc::pid_t == self.child {
+                return None;
+            }
+            // Its executable's name, which unlike the info's isn't cut short.
+            let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+            let len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+            let path = Path::new(OsStr::from_bytes(path.get(..len.max(0) as usize)?));
+            Some(path.file_name()?.to_string_lossy().into_owned())
+        })
+    }
+
+    /// The process group in the foreground. None once the shell has exited.
+    fn foreground(&self) -> Option<libc::pid_t> {
         if self.exited {
-            return self.cwd.clone();
+            return None;
         }
         let foreground = unsafe { libc::tcgetpgrp(self.pty_file.as_raw_fd()) };
-        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-        let size = std::mem::size_of_val(&info) as i32;
-        let read =
-            unsafe { libc::proc_pidinfo(foreground, libc::PROC_PIDVNODEPATHINFO, 0, (&raw mut info).cast(), size) };
-        if foreground <= 0 || read != size {
-            return self.cwd.clone();
-        }
-        let path = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
-        PathBuf::from(OsStr::from_bytes(path.to_bytes()))
+        (foreground > 0).then_some(foreground)
     }
 
     /// Writes text to the shell as if typed.
@@ -487,6 +519,14 @@ impl TerminalView {
             cx.notify();
         }
     }
+}
+
+/// What `proc_pidinfo` gives of `pid` as `flavor`, which `T` is the struct for.
+fn pid_info<T>(pid: libc::pid_t, flavor: libc::c_int) -> Option<T> {
+    let mut info: T = unsafe { std::mem::zeroed() };
+    let size = size_of::<T>() as i32;
+    let read = unsafe { libc::proc_pidinfo(pid, flavor, 0, (&raw mut info).cast(), size) };
+    (read == size).then_some(info)
 }
 
 fn window_size(geometry: &Geometry) -> WindowSize {
