@@ -434,14 +434,7 @@ impl Render for Browser {
             .on_drag_move(cx.listener(Self::drag_marquee))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::end_marquee))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::end_marquee))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(|this, _, window, cx| {
-                    if !this.focus_handle.contains_focused(window, cx) {
-                        this.focus_handle.focus(window, cx);
-                    }
-                }),
-            )
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::press_listing_right))
             .on_drop_files(cx.listener(move |this, paths: &[PathBuf], window, cx| {
                 this.drop_paths(paths, current_dir.clone(), window, cx)
             }))

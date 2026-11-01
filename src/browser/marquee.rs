@@ -145,13 +145,36 @@ impl Browser {
         }
     }
 
+    /// The item at `position` in the window, if there's one there.
+    pub(super) fn item_at(&self, position: Point<Pixels>, cx: &App) -> Option<usize> {
+        let (bounds, offset) = self.viewport();
+        if !bounds.contains(&position) {
+            return None;
+        }
+        let at = position - bounds.origin - offset;
+        (0..self.listing.len()).find(|&ix| self.item_bounds(ix, cx).contains(&at))
+    }
+
+    /// A right click on the listing. On an item, it selects that, unless it's already part of the
+    /// selection. On an empty spot, it clears the selection, so the menu is the folder's.
+    pub(super) fn press_listing_right(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.focus_handle.contains_focused(window, cx) {
+            self.focus_handle.focus(window, cx);
+        }
+        match self.item_at(event.position, cx) {
+            Some(ix) if self.selection.contains(&self.name_at(ix)) => {}
+            Some(ix) => self.select_ix(ix, false, cx),
+            None => {
+                self.selection.names.clear();
+                cx.notify();
+            }
+        }
+    }
+
     /// Shows the item at `position` in the window in Quick Look, selected, or closes Quick Look on it
     /// if it's open. It's what a tap with three fingers does in Finder.
     pub fn look_up(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let (bounds, offset) = self.viewport();
-        let at = position - bounds.origin - offset;
-        let hit = (0..self.listing.len()).find(|&ix| self.item_bounds(ix, cx).contains(&at));
-        let Some(ix) = hit.filter(|_| bounds.contains(&position)) else { return };
+        let Some(ix) = self.item_at(position, cx) else { return };
         if self.selection.contains(&self.name_at(ix)) {
             quicklook::toggle(self.selected_paths());
         } else {

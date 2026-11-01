@@ -537,7 +537,7 @@ impl Browser {
             .child(Input::new(&rename.input).xsmall())
     }
 
-    /// What rows and tiles share: the selection's colors, right and middle clicks, and drops.
+    /// What rows and tiles share: the selection's colors, middle clicks, and drops.
     fn item(&self, el: Stateful<Div>, ix: usize, batch: &Batch, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
         let entry = &self.listing[ix];
@@ -551,15 +551,6 @@ impl Browser {
             // item's no longer selected.
             .when(is_cursor && selected && batch.focused, |el| el.border_color(theme.list_active_border))
             .when(!selected, |el| el.hover(|style| style.bg(batch.hover_tint)))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    if !this.selection.contains(&this.name_at(ix)) {
-                        this.select_ix(ix, false, cx);
-                    }
-                }),
-            )
             .when(entry.folder, |el| {
                 el.on_mouse_down(
                     MouseButton::Middle,
