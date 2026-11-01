@@ -158,9 +158,7 @@ impl Browser {
     /// A right click on the listing. On an item, it selects that, unless it's already part of the
     /// selection. On an empty spot, it clears the selection, so the menu is the folder's.
     pub(super) fn press_listing_right(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.focus_handle.contains_focused(window, cx) {
-            self.focus_handle.focus(window, cx);
-        }
+        self.focus_handle.focus(window, cx);
         match self.item_at(event.position, cx) {
             Some(ix) if self.selection.contains(&self.name_at(ix)) => {}
             Some(ix) => self.select_ix(ix, false, cx),
