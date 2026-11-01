@@ -48,7 +48,7 @@ impl Item {
             Tab::Editor(path) => Item::Editor(cx.new(|cx| FileEditor::new(path, window, cx))),
             Tab::Search(root) => Item::Search(cx.new(|cx| Search::new(root, window, cx))),
             Tab::Activity => Item::Activity(cx.new(|cx| Activity::new(window, cx))),
-            Tab::ThisMac | Tab::Storage(_) => Item::Mac(cx.new(|cx| ThisMac::new(tab, cx))),
+            Tab::ThisMac | Tab::Startup | Tab::Storage(_) => Item::Mac(cx.new(|cx| ThisMac::new(tab, cx))),
             Tab::History => Item::History(cx.new(HistoryPage::new)),
             Tab::Settings => Item::Settings(cx.new(SettingsPage::new)),
         }
@@ -61,7 +61,7 @@ impl Item {
             (Item::Editor(editor), Tab::Editor(path)) => editor.read(cx).path() == path,
             (Item::Search(search), Tab::Search(root)) => search.read(cx).root() == root,
             (Item::Activity(_), Tab::Activity)
-            | (Item::Mac(_), Tab::ThisMac | Tab::Storage(_))
+            | (Item::Mac(_), Tab::ThisMac | Tab::Startup | Tab::Storage(_))
             | (Item::History(_), Tab::History)
             | (Item::Settings(_), Tab::Settings) => true,
             _ => false,

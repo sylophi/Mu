@@ -14,7 +14,8 @@ use objc2_foundation::{NSString, NSURL};
 
 use crate::{fs::home_dir, session::Tab};
 
-const USAGE: &str = "usage: mu [terminal | edit | find | storage | activity | mac | history | settings] [path]
+const USAGE: &str =
+    "usage: mu [terminal | edit | find | storage | activity | mac | startup | history | settings] [path]
 
 Opens a tab in Mu: the folder at path, or a file selected in its folder, unless it's one of those.
 Without a path, it's the current folder.";
@@ -23,7 +24,7 @@ Without a path, it's the current folder.";
 /// path. Whether it takes that path is up to `Tab::path`.
 type Kind = (&'static str, fn(PathBuf) -> Tab);
 
-const KINDS: [Kind; 9] = [
+const KINDS: [Kind; 10] = [
     ("folder", Tab::Folder),
     ("terminal", Tab::Terminal),
     ("edit", Tab::Editor),
@@ -31,6 +32,7 @@ const KINDS: [Kind; 9] = [
     ("storage", Tab::Storage),
     ("activity", |_| Tab::Activity),
     ("mac", |_| Tab::ThisMac),
+    ("startup", |_| Tab::Startup),
     ("history", |_| Tab::History),
     ("settings", |_| Tab::Settings),
 ];

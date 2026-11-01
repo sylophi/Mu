@@ -7,11 +7,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
-    spinner::Spinner,
-    v_flex,
+    h_flex, v_flex,
 };
-use gpui_kit::{prelude::FluentBuilder as _, *};
+use gpui_kit::*;
 
 use crate::{
     activity::{
@@ -20,11 +18,12 @@ use crate::{
         registry,
     },
     browser::Refresh,
-    fs,
+    fs, theme,
 };
 
 use super::{
     devices::{self, Device, Kind},
+    group, list, loading, note,
     updates::{self, Update},
 };
 
@@ -107,7 +106,7 @@ impl Overview {
         let mut rows = vec![("Charge", format!("{}%{charging}", battery.percent))];
         rows.extend(battery.health.map(|health| ("Maximum capacity", format!("{health}%"))));
         rows.extend(battery.cycles.map(|cycles| ("Cycle count", cycles.to_string())));
-        group("Battery", None, card(rows, cx), cx)
+        group("Battery", None, facts(rows, cx), cx)
     }
 
     fn render_devices(&self, cx: &App) -> impl IntoElement + use<> {
@@ -161,36 +160,8 @@ impl Overview {
     }
 }
 
-/// A heading, with a button at its end, over what it's about.
-fn group(heading: &'static str, button: Option<Button>, content: Div, cx: &App) -> impl IntoElement + use<> {
-    let heading = h_flex().h(px(24.)).justify_between().child(div().font_semibold().child(heading)).children(button);
-    v_flex()
-        .gap_2()
-        .child(heading)
-        .child(content.rounded(cx.theme().radius_lg).border_1().border_color(cx.theme().border))
-}
-
-/// A card of `rows`, one under another.
-fn list(rows: impl Iterator<Item = Div>, cx: &App) -> Div {
-    let theme = cx.theme();
-    v_flex().children(
-        rows.enumerate().map(|(ix, row)| {
-            row.px_4().py_2().text_sm().when(ix > 0, |row| row.border_t_1().border_color(theme.border))
-        }),
-    )
-}
-
-/// A card saying `text` in place of a list.
-fn note(text: &'static str, cx: &App) -> Div {
-    div().px_4().py_2().text_sm().text_color(cx.theme().muted_foreground).child(text)
-}
-
-fn loading() -> Div {
-    h_flex().px_4().py_2().child(Spinner::new().small())
-}
-
-/// A card of facts, a name and its value to a row.
-fn card(rows: Vec<(&'static str, String)>, cx: &App) -> Div {
+/// Facts, a name and its value to a row.
+fn facts(rows: Vec<(&'static str, String)>, cx: &App) -> Div {
     let muted = cx.theme().muted_foreground;
     list(
         rows.into_iter().map(|(name, value)| {
@@ -233,7 +204,7 @@ impl Render for Overview {
                             .child(Icon::new(IconName::Laptop).size(px(22.)).text_color(theme.muted_foreground))
                             .child(div().text_xl().font_semibold().child(self.model.clone())),
                     )
-                    .child(card(mac, cx).rounded(theme.radius_lg).border_1().border_color(theme.border))
+                    .child(theme::card(theme).child(facts(mac, cx)))
                     .children(self.battery.map(|battery| self.render_battery(battery, cx)))
                     .child(self.render_devices(cx))
                     .child(self.render_updates(cx)),
