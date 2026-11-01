@@ -23,6 +23,9 @@ pub(super) struct Selection {
     pub(super) cursor: Option<SharedString>,
     /// Where a range selected with ⇧ starts from.
     pub(super) anchor: Option<SharedString>,
+    /// What was selected before the last plain click, which narrows it to the item clicked. A
+    /// double-click on one of these items opens them all.
+    before_click: HashSet<SharedString>,
 }
 
 impl Selection {
@@ -186,6 +189,10 @@ impl Browser {
         self.focus_handle.focus(window, cx);
         let name = self.name_at(ix);
         let modifiers = event.modifiers;
+        let plain = !modifiers.shift && !modifiers.platform;
+        if plain && event.click_count == 1 {
+            self.selection.before_click = self.selection.names.clone();
+        }
         if modifiers.platform && event.click_count == 2 {
             // ⌘-double-click opens a folder in a new tab, like Finder. The first click selected it.
             let entry = &self.listing[ix];
@@ -201,7 +208,10 @@ impl Browser {
         } else {
             self.selection.cursor = Some(name);
         }
-        if event.click_count == 2 && !modifiers.shift && !modifiers.platform {
+        if plain && event.click_count == 2 {
+            if self.selection.before_click.contains(&self.listing[ix].name) {
+                self.selection.names = std::mem::take(&mut self.selection.before_click);
+            }
             self.open(window, cx);
         }
         cx.notify();
