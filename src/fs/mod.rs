@@ -11,6 +11,7 @@ mod names;
 mod ops;
 mod trash;
 mod undo;
+mod using;
 mod volumes;
 
 use std::{
@@ -26,7 +27,7 @@ use anyhow::{Result, bail};
 use objc2::rc::Retained;
 use objc2_foundation::{NSString, NSURL};
 
-pub use apps::{apps_to_open, bookmark_target, is_plain_text, open_with};
+pub use apps::{app_bundle, apps_to_open, bookmark_target, is_plain_text, open_with};
 pub use archives::{compress, extract, replacement_folder};
 pub use kinds::{Category, extension, is_archive, is_disk_image, is_package, read_text};
 pub use listing::{Changes, Entry, SF_DATALESS, Shared, Usage, list_dir, list_usage, watch};
@@ -38,7 +39,8 @@ pub use names::{
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};
 pub use trash::{empty_trash, is_locked, origin, put_back, set_origin, trash, trash_items};
 pub use undo::{Done, Undo};
-pub use volumes::{Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
+pub use using::{holders, names};
+pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
 
 use apps::alias_target;
 use kinds::describe;

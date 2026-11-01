@@ -2,7 +2,7 @@
 
 use std::{
     ffi::{CStr, CString, OsStr},
-    fs,
+    fmt, fs,
     os::{macos::fs::MetadataExt as _, unix::ffi::OsStrExt as _},
     path::{Path, PathBuf},
     process::Command,
@@ -11,7 +11,10 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use gpui_kit::SharedString;
 
-use super::{Cancelled, display_name, natural_cmp, run};
+use super::{
+    Cancelled, display_name, natural_cmp, run,
+    using::{self, Holder},
+};
 
 fn statfs(path: &Path) -> Option<libc::statfs> {
     let path = CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -102,10 +105,56 @@ pub fn mount_image(path: &Path) -> Result<PathBuf> {
     mounted.map(PathBuf::from).with_context(|| format!("“{}” has nothing to show", display_name(path)))
 }
 
+/// Ejects the disk mounted at `volume`. When something is using it, this fails with an
+/// [`InUse`] naming what.
 pub fn eject(volume: &Path) -> Result<()> {
     // A share from another computer has no disk to eject, only a mount to undo.
     let verb = if is_network(volume) { "unmount" } else { "eject" };
-    run(Command::new("/usr/sbin/diskutil").arg(verb).arg(volume))
-        .with_context(|| format!("Couldn't eject “{}”", display_name(volume)))?;
-    Ok(())
+    let Err(error) = run(Command::new("/usr/sbin/diskutil").arg(verb).arg(volume)) else { return Ok(()) };
+    let mut holders = using::holders(volume, true);
+    if let Some(dissenter) = dissenter(&error.to_string())
+        && !holders.iter().any(|holder| holder.pid == dissenter.pid)
+    {
+        holders.push(dissenter);
+    }
+    let error = if holders.is_empty() { error } else { InUse(holders).into() };
+    Err(error.context(format!("Couldn't eject “{}”", display_name(volume))))
+}
+
+/// What kept a disk from ejecting.
+#[derive(Debug)]
+pub struct InUse(pub Vec<Holder>);
+
+impl fmt::Display for InUse {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let verb = if using::distinct(&self.0).len() == 1 { "is" } else { "are" };
+        write!(f, "{} {verb} using it", using::names(&self.0))
+    }
+}
+
+impl std::error::Error for InUse {}
+
+/// The process diskutil says kept a disk from ejecting, from what it printed, like "Unmount was
+/// dissented by PID 452 (/usr/bin/tail)". It can be one of the system's, that only root sees.
+fn dissenter(message: &str) -> Option<Holder> {
+    let (_, rest) = message.split_once("dissented by PID ")?;
+    let (pid, rest) = rest.split_once(" (")?;
+    let pid = pid.parse().ok().filter(|&pid| pid != 0 && pid != std::process::id())?;
+    Some(Holder::new(pid, rest.split_once(')').map(|(exe, _)| Path::new(exe))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dissenter;
+
+    #[test]
+    fn reads_the_dissenter() {
+        let message = "Unmount of disk11 failed: at least one volume could not be unmounted\nUnmount was dissented by PID 21949 (/usr/bin/tail)\nDissenter parent PPID 1 (/sbin/launchd)";
+        let holder = dissenter(message).unwrap();
+        assert_eq!((holder.pid, holder.name.as_str()), (21949, "tail"));
+        let helper = dissenter("dissented by PID 7 (/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper)").unwrap();
+        assert_eq!(helper.name, "Slack");
+        assert!(dissenter("dissented by PID 0 (kernel_task)").is_none());
+        assert!(dissenter("Volume failed to unmount").is_none());
+    }
 }

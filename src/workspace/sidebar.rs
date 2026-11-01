@@ -4,6 +4,7 @@ use std::{
     cell::Cell,
     path::{Path, PathBuf},
     rc::Rc,
+    time::Duration,
 };
 
 use gpui_kit::assets::IconName;
@@ -24,6 +25,7 @@ use super::{
     windows::open_window,
 };
 use crate::{
+    activity::monitor,
     drag::{self, DragFiles as _, DraggedFiles, DropFiles as _, drag_preview},
     fs::{self, home_dir},
     icons,
@@ -182,9 +184,48 @@ impl Workspace {
                         }
                     }
                 }
-                Err(error) => window.toast_error(&error, cx),
+                Err(error) => match error.downcast_ref::<fs::InUse>() {
+                    Some(fs::InUse(holders)) => {
+                        let pids: Vec<u32> = holders.iter().map(|holder| holder.pid).collect();
+                        let workspace = cx.weak_entity();
+                        let note = Notification::error(format!("{error:#}")).action(move |_, _, cx| {
+                            let (workspace, pids, volume) = (workspace.clone(), pids.clone(), volume.clone());
+                            Button::new("quit-and-eject").label("Quit and Eject").on_click(cx.listener(
+                                move |note, _, window, cx| {
+                                    note.dismiss(window, cx);
+                                    workspace
+                                        .update(cx, |this, cx| {
+                                            this.quit_and_eject(pids.clone(), volume.clone(), window, cx)
+                                        })
+                                        .ok();
+                                },
+                            ))
+                        });
+                        window.toast(note, cx);
+                    }
+                    None => window.toast_error(&error, cx),
+                },
             })
             .ok();
+        })
+        .detach();
+    }
+
+    /// Quits the processes `pids`, as Activity's Quit does, and ejects `volume` once they've gone
+    /// or had a few seconds to.
+    fn quit_and_eject(&mut self, pids: Vec<u32>, volume: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        for &pid in &pids {
+            monitor::signal(pid, libc::SIGTERM).ok();
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let running = |&pid: &u32| monitor::signal(pid, 0).is_ok();
+            for _ in 0..50 {
+                if !pids.iter().any(running) {
+                    break;
+                }
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+            }
+            this.update_in(cx, |this, window, cx| this.eject(volume, window, cx)).ok();
         })
         .detach();
     }
