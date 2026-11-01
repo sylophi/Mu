@@ -186,16 +186,16 @@ impl Workspace {
                 }
                 Err(error) => match error.downcast_ref::<fs::InUse>() {
                     Some(fs::InUse(holders)) => {
-                        let pids: Vec<u32> = holders.iter().map(|holder| holder.pid).collect();
+                        let holders = holders.clone();
                         let workspace = cx.weak_entity();
                         let note = Notification::error(format!("{error:#}")).action(move |_, _, cx| {
-                            let (workspace, pids, volume) = (workspace.clone(), pids.clone(), volume.clone());
+                            let (workspace, holders, volume) = (workspace.clone(), holders.clone(), volume.clone());
                             Button::new("quit-and-eject").label("Quit and Eject").on_click(cx.listener(
                                 move |note, _, window, cx| {
                                     note.dismiss(window, cx);
                                     workspace
                                         .update(cx, |this, cx| {
-                                            this.quit_and_eject(pids.clone(), volume.clone(), window, cx)
+                                            this.quit_and_eject(holders.clone(), volume.clone(), window, cx)
                                         })
                                         .ok();
                                 },
@@ -211,16 +211,22 @@ impl Workspace {
         .detach();
     }
 
-    /// Quits the processes `pids`, as Activity's Quit does, and ejects `volume` once they've gone
-    /// or had a few seconds to.
-    fn quit_and_eject(&mut self, pids: Vec<u32>, volume: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        for &pid in &pids {
-            monitor::signal(pid, libc::SIGTERM).ok();
+    /// Quits `holders` and ejects `volume` once they've gone or had a few seconds to.
+    fn quit_and_eject(
+        &mut self,
+        holders: Vec<fs::Holder>,
+        volume: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = monitor::quit(&holders) {
+            window.toast_error(&error, cx);
+            return;
         }
         cx.spawn_in(window, async move |this, cx| {
-            let running = |&pid: &u32| monitor::signal(pid, 0).is_ok();
+            let running = |holder: &fs::Holder| monitor::signal(holder.pid, 0).is_ok();
             for _ in 0..50 {
-                if !pids.iter().any(running) {
+                if !holders.iter().any(running) {
                     break;
                 }
                 cx.background_executor().timer(Duration::from_millis(100)).await;

@@ -10,20 +10,28 @@ use std::{
 use super::{app_bundle, c_path};
 
 /// A process using something.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Holder {
     pub pid: u32,
+    /// Its program, when macOS says.
+    pub exe: Option<PathBuf>,
     /// What it goes by: its app's name, for a program inside an app.
     pub name: String,
 }
 
 impl Holder {
-    pub(super) fn new(pid: u32, exe: Option<&Path>) -> Self {
-        let name = exe
-            .map(|exe| app_bundle(exe).unwrap_or_else(|| exe.to_path_buf()))
-            .and_then(|path| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| format!("process {pid}"));
-        Self { pid, name }
+    pub(super) fn new(pid: u32, exe: Option<PathBuf>) -> Self {
+        let name = exe.as_deref().and_then(|exe| match app_bundle(exe) {
+            Some(app) => app.file_stem().map(|name| name.to_string_lossy().into_owned()),
+            None => exe.file_name().map(|name| name.to_string_lossy().into_owned()),
+        });
+        let name = name.unwrap_or_else(|| format!("process {pid}"));
+        Self { pid, exe, name }
+    }
+
+    /// Whether it's one of macOS's own, like Quick Look making a thumbnail.
+    pub fn is_system(&self) -> bool {
+        self.exe.as_ref().is_some_and(|exe| exe.starts_with("/System/"))
     }
 }
 
@@ -54,7 +62,7 @@ pub fn holders(path: &Path, volume: bool) -> Vec<Holder> {
     pids.into_iter()
         .map(|pid| pid as u32)
         .filter(|&pid| pid != std::process::id())
-        .map(|pid| Holder::new(pid, executable(pid).as_deref()))
+        .map(|pid| Holder::new(pid, executable(pid)))
         .collect()
 }
 
@@ -96,20 +104,20 @@ mod tests {
         let scratch = Scratch::new("using");
         let path = scratch.0.join("held");
         std::fs::write(&path, "").unwrap();
-        assert!(holders(&path, false).is_empty(), "Mu itself doesn't count");
+        // Others, like Spotlight, can have it open too.
+        let held_by =
+            |pid| holders(&path, false).into_iter().find(|holder| holder.pid == pid).map(|holder| holder.name);
+        assert_eq!(held_by(std::process::id()), None, "Mu itself doesn't count");
         let mut sleep = Command::new("/bin/sleep").arg("30").stdin(File::open(&path).unwrap()).spawn().unwrap();
-        let found = holders(&path, false);
+        let found = held_by(sleep.id());
         sleep.kill().unwrap();
         sleep.wait().unwrap();
-        assert_eq!(
-            found.iter().map(|holder| (holder.pid, holder.name.as_str())).collect::<Vec<_>>(),
-            [(sleep.id(), "sleep")]
-        );
+        assert_eq!(found.as_deref(), Some("sleep"));
     }
 
     #[test]
     fn names_each_once() {
-        let holder = |pid, name: &str| Holder { pid, name: name.into() };
+        let holder = |pid, name: &str| Holder { pid, exe: None, name: name.into() };
         assert_eq!(names(&[holder(1, "Slack"), holder(2, "Slack")]), "Slack");
         assert_eq!(names(&[holder(1, "Photos"), holder(2, "tail")]), "Photos and tail");
         assert_eq!(names(&[holder(1, "Photos"), holder(2, "Preview"), holder(3, "tail")]), "Photos, Preview and tail");

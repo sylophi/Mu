@@ -111,8 +111,14 @@ pub fn eject(volume: &Path) -> Result<()> {
     // A share from another computer has no disk to eject, only a mount to undo.
     let verb = if is_network(volume) { "unmount" } else { "eject" };
     let Err(error) = run(Command::new("/usr/sbin/diskutil").arg(verb).arg(volume)) else { return Ok(()) };
+    let message = error.to_string();
+    // diskutil says when something kept it from ejecting, naming one process, though there can be
+    // more. Otherwise what went wrong is something else.
+    if !message.contains(DISSENTED) {
+        return Err(error.context(format!("Couldn't eject “{}”", display_name(volume))));
+    }
     let mut holders = using::holders(volume, true);
-    if let Some(dissenter) = dissenter(&error.to_string())
+    if let Some(dissenter) = dissenter(&message)
         && !holders.iter().any(|holder| holder.pid == dissenter.pid)
     {
         holders.push(dissenter);
@@ -137,11 +143,14 @@ impl std::error::Error for InUse {}
 /// The process diskutil says kept a disk from ejecting, from what it printed, like "Unmount was
 /// dissented by PID 452 (/usr/bin/tail)". It can be one of the system's, that only root sees.
 fn dissenter(message: &str) -> Option<Holder> {
-    let (_, rest) = message.split_once("dissented by PID ")?;
+    let (_, rest) = message.split_once(DISSENTED)?;
     let (pid, rest) = rest.split_once(" (")?;
     let pid = pid.parse().ok().filter(|&pid| pid != 0 && pid != std::process::id())?;
-    Some(Holder::new(pid, rest.split_once(')').map(|(exe, _)| Path::new(exe))))
+    let exe = rest.lines().next().and_then(|exe| exe.strip_suffix(')'));
+    Some(Holder::new(pid, exe.map(PathBuf::from)))
 }
+
+const DISSENTED: &str = "dissented by PID ";
 
 #[cfg(test)]
 mod tests {
@@ -154,6 +163,10 @@ mod tests {
         assert_eq!((holder.pid, holder.name.as_str()), (21949, "tail"));
         let helper = dissenter("dissented by PID 7 (/Applications/Slack.app/Contents/Frameworks/Slack Helper.app/Contents/MacOS/Slack Helper)").unwrap();
         assert_eq!(helper.name, "Slack");
+        let beta = dissenter("dissented by PID 8 (/Applications/Foo (Beta).app/Contents/MacOS/Foo)").unwrap();
+        assert_eq!(beta.name, "Foo (Beta)");
+        let dotted = dissenter("dissented by PID 9 (/usr/local/bin/python3.12)").unwrap();
+        assert_eq!(dotted.name, "python3.12");
         assert!(dissenter("dissented by PID 0 (kernel_task)").is_none());
         assert!(dissenter("Volume failed to unmount").is_none());
     }

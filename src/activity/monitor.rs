@@ -15,7 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context as _;
 use gpui_kit::*;
+use objc2_app_kit::NSWorkspace;
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_foundation::{NSProcessInfo, NSProcessInfoThermalState};
 use sysinfo::{
@@ -24,6 +26,7 @@ use sysinfo::{
 };
 
 use super::registry::{self, Entry};
+use crate::fs;
 
 /// Two minutes of history.
 pub const HISTORY: usize = 120;
@@ -488,6 +491,24 @@ fn parse_ports(lsof: &str) -> Vec<Port> {
     }
     ports.sort_by_key(|port| port.port);
     ports
+}
+
+/// Quits each of `holders`: an app as its Quit menu item does, so it can ask to save its documents
+/// first, and any other process with SIGHUP, as closing its terminal does, which ends a shell where
+/// SIGTERM doesn't. One that keeps running anyway, like a command run with nohup, is left to Force
+/// Quit.
+pub fn quit(holders: &[fs::Holder]) -> anyhow::Result<()> {
+    let apps = NSWorkspace::sharedWorkspace().runningApplications();
+    for holder in holders {
+        let app = holder.exe.as_deref().and_then(fs::app_bundle).and_then(|bundle| {
+            apps.iter().find(|app| app.bundleURL().and_then(|url| url.to_file_path()).as_ref() == Some(&bundle))
+        });
+        match app {
+            Some(app) => _ = app.terminate(),
+            None => signal(holder.pid, libc::SIGHUP).with_context(|| format!("Couldn't quit {}", holder.name))?,
+        }
+    }
+    Ok(())
 }
 
 /// Sends `signal` to `pid`. Pid 0 (the kernel, or a port whose owner `lsof` didn't say) is turned

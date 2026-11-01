@@ -39,7 +39,7 @@ pub use names::{
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};
 pub use trash::{empty_trash, is_locked, origin, put_back, set_origin, trash, trash_items};
 pub use undo::{Done, Undo};
-pub use using::{holders, names};
+pub use using::{Holder, holders, names};
 pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
 
 use apps::alias_target;
