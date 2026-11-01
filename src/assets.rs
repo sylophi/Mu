@@ -34,6 +34,7 @@ gpui_kit::assets::icon_assets!(
         Network,
         Package,
         PackageOpen,
+        PackageX,
         Pencil,
         Redo2,
         Replace,

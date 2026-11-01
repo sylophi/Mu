@@ -76,6 +76,10 @@ pub enum TabEvent {
     /// Shows these items, all in one folder, selected.
     Reveal(Vec<PathBuf>),
     ShowFolder(PathBuf),
+    /// Opens this app in a tab of its own, to remove it.
+    Uninstall(PathBuf),
+    /// Closes this tab, as when what it showed has gone.
+    Close,
 }
 
 /// What its buttons and meters need, which toasts stay above.

@@ -2,7 +2,7 @@
 //! belongs to. Those launchd starts from its folders can be switched off here. Those apps register
 //! for themselves are switched in System Settings.
 
-mod launchd;
+pub(super) mod launchd;
 mod login_items;
 
 use std::{

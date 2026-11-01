@@ -11,7 +11,7 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{
     AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, Duplicate, NewFolder, Open, OpenInEditor, OpenInNewTab,
-    OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, Rename, ShowPackageContents, Trash,
+    OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, Rename, ShowPackageContents, Trash, Uninstall,
     listing::SortKey,
 };
 use crate::{
@@ -66,6 +66,7 @@ impl Browser {
         let single = selected.len() == 1;
         let single_dir = single && selected[0].folder;
         let package = single && selected[0].package;
+        let app = this.can_uninstall();
         let menu = menu
             .when(in_trash, |menu| {
                 menu.menu_with_icon_and_disabled("Put Back", IconName::Undo2, Box::new(PutBack), !known).separator()
@@ -128,5 +129,6 @@ impl Browser {
             menu.menu_with_icon("Add to Sidebar", IconName::PanelLeft, Box::new(AddToSidebar))
         })
         .when(!in_trash, |menu| menu.menu_with_icon("Move to Trash", IconName::Trash, Box::new(Trash)))
+        .when(app, |menu| menu.menu_with_icon("Uninstall…", IconName::PackageX, Box::new(Uninstall)))
     }
 }

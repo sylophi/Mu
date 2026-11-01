@@ -4,6 +4,7 @@ mod devices;
 mod overview;
 mod startup;
 pub mod storage;
+mod uninstall;
 mod updates;
 
 use gpui_kit::component::{
@@ -20,10 +21,12 @@ use crate::{browser::Refresh, fs::home_dir, session::Tab, theme, workspace::TabE
 use overview::Overview;
 use startup::Startup;
 use storage::Storage;
+pub use uninstall::Uninstall;
 
 pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-r", Refresh, Some("ThisMac"))]);
     storage::init(cx);
+    uninstall::init(cx);
 }
 
 /// In the order their tabs are.
@@ -188,8 +191,8 @@ fn list(rows: impl IntoIterator<Item = impl IntoElement>, cx: &App) -> Div {
 }
 
 /// `text` in place of a list.
-fn note(text: &'static str, cx: &App) -> Div {
-    div().px_4().py_2().text_sm().text_color(cx.theme().muted_foreground).child(text)
+fn note(text: impl Into<SharedString>, cx: &App) -> Div {
+    div().px_4().py_2().text_sm().text_color(cx.theme().muted_foreground).child(text.into())
 }
 
 /// In place of a list that's still being read.

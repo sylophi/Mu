@@ -26,6 +26,8 @@ pub enum Tab {
     Storage(PathBuf),
     History,
     Settings,
+    /// An app, to remove it with what it left.
+    Uninstall(PathBuf),
 }
 
 impl Tab {
@@ -35,7 +37,7 @@ impl Tab {
             Tab::Folder(path) | Tab::Terminal(path) | Tab::Editor(path) | Tab::Search(path) | Tab::Storage(path) => {
                 Some(path)
             }
-            Tab::Activity | Tab::ThisMac | Tab::Startup | Tab::History | Tab::Settings => None,
+            Tab::Activity | Tab::ThisMac | Tab::Startup | Tab::History | Tab::Settings | Tab::Uninstall(_) => None,
         }
     }
 }

@@ -8,7 +8,7 @@ use gpui_kit::*;
 use super::Browser;
 use crate::{
     drag,
-    fs::{self, Choices, Done, Entry, Progress},
+    fs::{self, Category, Choices, Done, Entry, Progress},
     history::{self, Op},
     operations, pasteboard,
     settings::Settings,
@@ -113,6 +113,25 @@ impl Browser {
     pub(super) fn show_package_contents(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(entry) = self.cursor_entry().filter(|e| e.package) {
             self.navigate(entry.target().to_path_buf(), window, cx);
+        }
+    }
+
+    /// The app selected on its own, to remove.
+    fn app_to_uninstall(&self) -> Option<&Entry> {
+        if self.selection.names.len() != 1 || self.in_trash() {
+            return None;
+        }
+        self.selected_entries().pop().filter(|entry| entry.category == Category::App)
+    }
+
+    pub fn can_uninstall(&self) -> bool {
+        self.app_to_uninstall().is_some()
+    }
+
+    /// Opens the selected app in a tab of its own, to remove it.
+    pub fn uninstall(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.app_to_uninstall().map(|entry| entry.target().to_path_buf()) {
+            cx.emit(TabEvent::Uninstall(path));
         }
     }
 

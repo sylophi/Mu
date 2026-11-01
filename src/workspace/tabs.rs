@@ -325,7 +325,12 @@ impl Workspace {
                         }))
                         .item(copy(path))
                     }
-                    Item::Search(_) | Item::Activity(_) | Item::Mac(_) | Item::History(_) | Item::Settings(_) => menu,
+                    Item::Search(_)
+                    | Item::Activity(_)
+                    | Item::Mac(_)
+                    | Item::History(_)
+                    | Item::Settings(_)
+                    | Item::Uninstall(_) => menu,
                 }
             })
             .into_any_element()

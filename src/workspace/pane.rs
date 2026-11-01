@@ -129,6 +129,7 @@ impl Workspace {
             Item::Mac(page) => cx.subscribe_in(page, window, Self::tab_event),
             Item::History(page) => cx.subscribe_in(page, window, Self::tab_event),
             Item::Settings(page) => cx.subscribe_in(page, window, Self::tab_event),
+            Item::Uninstall(page) => cx.subscribe_in(page, window, Self::tab_event),
         };
         self.tab_subscriptions.insert(item.id(), subscription);
     }
@@ -160,6 +161,8 @@ impl Workspace {
             TabEvent::OpenTab(path) => self.open_behind(path.clone(), window, cx),
             TabEvent::OpenWindow(path) => open_window(path.clone(), cx),
             TabEvent::OpenTerminal(dir) => self.open_tab(Tab::Terminal(dir.clone()), window, cx),
+            TabEvent::Uninstall(app) => self.open_tab(Tab::Uninstall(app.clone()), window, cx),
+            TabEvent::Close => self.close_item(tab.entity_id(), window, cx),
             TabEvent::Edit { path, line } => {
                 self.open_tab(Tab::Editor(path.clone()), window, cx);
                 if let (Some(line), Some(Item::Editor(editor))) = (line, self.active_item()) {

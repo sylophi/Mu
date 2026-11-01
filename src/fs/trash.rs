@@ -100,6 +100,12 @@ pub fn is_locked(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & libc::UF_IMMUTABLE != 0)
 }
 
+/// Whether macOS protects `path` from changes, even by an administrator, as it does its own apps.
+pub fn is_restricted(path: &Path) -> bool {
+    const SF_RESTRICTED: u32 = 0x0008_0000;
+    fs::symlink_metadata(path).is_ok_and(|meta| meta.st_flags() & SF_RESTRICTED != 0)
+}
+
 /// Locks or unlocks `path` in Finder.
 fn set_locked(path: &Path, locked: bool) -> Result<()> {
     let flags = fs::symlink_metadata(path)?.st_flags();
