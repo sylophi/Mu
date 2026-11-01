@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{app_bundle, c_path};
+use super::{c_path, program_name};
 
 /// A process using something.
 #[derive(Clone, Debug)]
@@ -21,11 +21,7 @@ pub struct Holder {
 
 impl Holder {
     pub(super) fn new(pid: u32, exe: Option<PathBuf>) -> Self {
-        let name = exe.as_deref().and_then(|exe| match app_bundle(exe) {
-            Some(app) => app.file_stem().map(|name| name.to_string_lossy().into_owned()),
-            None => exe.file_name().map(|name| name.to_string_lossy().into_owned()),
-        });
-        let name = name.unwrap_or_else(|| format!("process {pid}"));
+        let name = exe.as_deref().and_then(program_name).unwrap_or_else(|| format!("process {pid}"));
         Self { pid, exe, name }
     }
 

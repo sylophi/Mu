@@ -1,6 +1,7 @@
-//! What only an administrator may do, like moving an app the system owns or making a folder in
-//! /Library. A step of a file operation that you aren't allowed is done again by Mu's own
-//! executable running as root, once macOS has asked for an administrator's password, as in Finder.
+//! What only an administrator may do, like moving an app the system owns, making a folder in
+//! /Library or switching off a daemon. A step of a file operation that you aren't allowed is done
+//! again by Mu's own executable running as root, once macOS has asked for an administrator's
+//! password, as in Finder.
 //! That stays for the rest of the operation, so it asks once, and goes when the operation's done.
 //! An operation runs in a `session` on one thread from start to end, so root is held per thread,
 //! and operations running side by side each ask for their own.
@@ -34,6 +35,8 @@ pub enum Step {
     Delete(PathBuf),
     /// Moves an item into the Trash (from, to), noting where it came from.
     Trash(PathBuf, PathBuf),
+    /// Runs launchctl with these arguments, as for a daemon.
+    Launchctl(Vec<String>),
 }
 
 impl Step {
@@ -47,6 +50,9 @@ impl Step {
             Step::Trash(from, to) => {
                 fs::rename(&from, &to)?;
                 files::set_origin(&to, &from);
+            }
+            Step::Launchctl(arguments) => {
+                files::run(std::process::Command::new("/bin/launchctl").args(arguments))?;
             }
         }
         Ok(())

@@ -18,6 +18,15 @@ pub fn app_bundle(exe: &Path) -> Option<PathBuf> {
     exe.ancestors().filter(|path| path.extension().is_some_and(|ext| ext == "app")).last().map(Path::to_path_buf)
 }
 
+/// What a program goes by: its app's name, for a program inside an app.
+pub fn program_name(exe: &Path) -> Option<String> {
+    let name = match app_bundle(exe) {
+        Some(app) => app.file_stem()?.to_owned(),
+        None => exe.file_name()?.to_owned(),
+    };
+    Some(name.to_string_lossy().into_owned())
+}
+
 /// The apps that can open all of `paths`, as (name, app), with the first one's default app first.
 pub fn apps_to_open(paths: &[PathBuf]) -> Vec<(String, PathBuf)> {
     let workspace = NSWorkspace::sharedWorkspace();

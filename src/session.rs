@@ -20,6 +20,8 @@ pub enum Tab {
     Activity,
     /// This Mac, at its overview.
     ThisMac,
+    /// This Mac, at what opens at login and runs in the background.
+    Startup,
     /// This Mac, at what takes up the room in this folder.
     Storage(PathBuf),
     History,
@@ -33,7 +35,7 @@ impl Tab {
             Tab::Folder(path) | Tab::Terminal(path) | Tab::Editor(path) | Tab::Search(path) | Tab::Storage(path) => {
                 Some(path)
             }
-            Tab::Activity | Tab::ThisMac | Tab::History | Tab::Settings => None,
+            Tab::Activity | Tab::ThisMac | Tab::Startup | Tab::History | Tab::Settings => None,
         }
     }
 }

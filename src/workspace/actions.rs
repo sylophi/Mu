@@ -56,6 +56,7 @@ gpui_kit::actions!(
         ToggleZoom,
         ShowActivity,
         ShowThisMac,
+        ShowStartupItems,
         ShowStorage,
         ShowHistory,
         ShowSettings,
@@ -219,6 +220,7 @@ pub fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Command Palette", CommandPalette),
             MenuItem::action("Activity", ShowActivity),
             MenuItem::action("This Mac", ShowThisMac),
+            MenuItem::action("Startup Items", ShowStartupItems),
             MenuItem::action("Storage", ShowStorage),
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
@@ -299,6 +301,7 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| this.toggle_zoom(cx)))
         .on_action(cx.listener(|this, _: &ShowActivity, window, cx| this.open_tab(Tab::Activity, window, cx)))
         .on_action(cx.listener(|this, _: &ShowThisMac, window, cx| this.open_tab(Tab::ThisMac, window, cx)))
+        .on_action(cx.listener(|this, _: &ShowStartupItems, window, cx| this.open_tab(Tab::Startup, window, cx)))
         .on_action(cx.listener(|this, _: &ShowStorage, window, cx| {
             let dir = this.current_dir(cx);
             this.open_tab(Tab::Storage(dir), window, cx);
