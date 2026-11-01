@@ -33,7 +33,7 @@ pub use kinds::{Category, extension, is_archive, is_disk_image, is_package, read
 pub use listing::{Changes, Entry, SF_DATALESS, Shared, Usage, disk_usage, list_dir, list_usage, watch};
 pub use merge::{Choice, Choices, Clash, clashes, copy_into, move_into};
 pub use names::{
-    count, display_name, format_date, format_size, home_dir, icloud_drive, natural_cmp, shown_path, trash_dir,
+    count, display_name, format_date, format_size, home_dir, icloud_drive, listed, natural_cmp, shown_path, trash_dir,
     typed_path,
 };
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};

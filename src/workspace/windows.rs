@@ -12,7 +12,7 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use super::{Item, Workspace};
 use crate::{
     editor::FileEditor,
-    fs::home_dir,
+    fs::{self, home_dir},
     quicklook,
     session::{self, Tab},
 };
@@ -276,10 +276,49 @@ pub(super) fn confirm_discard(editors: Vec<Entity<FileEditor>>, window: &mut Win
     })
 }
 
-/// Quits once every window's unsaved changes are saved or let go, doing `then` first.
+/// Asks `question` before closing terminals that run something, resolving to whether closing can
+/// go on. `running` names what runs in each, and `verb` is the button that goes on, like "Quit".
+pub(super) fn confirm_running(
+    mut running: Vec<String>,
+    question: &str,
+    verb: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> Task<bool> {
+    if running.is_empty() {
+        return Task::ready(true);
+    }
+    running.sort();
+    running.dedup();
+    let names: Vec<String> = running.iter().map(|name| format!("“{name}”")).collect();
+    let detail = format!("{} {} still running.", fs::listed(&names), if names.len() == 1 { "is" } else { "are" });
+    let answer = window.prompt(PromptLevel::Warning, question, Some(&detail), &[verb, "Cancel"], cx);
+    window.spawn(cx, async move |_| matches!(answer.await, Ok(0)))
+}
+
+/// Quits once terminals that run something may close and every window's unsaved changes are saved
+/// or let go, doing `then` first.
 pub fn quit(cx: &mut App, then: impl FnOnce() + 'static) {
     cx.spawn(async move |cx| {
         // Read once the window handling the keystroke is done, as it can't be read until then.
+        // Running terminals are asked about once for every window, in the front one with any.
+        let running: Vec<_> = cx.update(|cx| {
+            workspaces(cx)
+                .into_iter()
+                .map(|(handle, workspace)| (handle, workspace.read(cx).running(cx)))
+                .filter(|(_, running)| !running.is_empty())
+                .collect()
+        });
+        if let Some(&(front, _)) = running.first() {
+            let names = running.into_iter().flat_map(|(_, running)| running).collect();
+            if let Ok(confirm) = front.update(cx, |_, window, cx| {
+                window.activate_window();
+                confirm_running(names, "Quit Mu?", "Quit", window, cx)
+            }) && !confirm.await
+            {
+                return;
+            }
+        }
         for (handle, workspace) in cx.update(|cx| workspaces(cx)) {
             let confirm = handle.update(cx, |_, window, cx| {
                 let unsaved = workspace.read(cx).unsaved(cx);
@@ -330,11 +369,15 @@ impl Workspace {
         }
     }
 
-    /// Closes the window, asking first about unsaved changes.
+    /// Closes the window, asking first about what runs in its terminals and unsaved changes.
     pub(super) fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let confirm = confirm_discard(self.unsaved(cx), window, cx);
+        let stop = confirm_running(self.running(cx), "Close this window?", "Close", window, cx);
         cx.spawn_in(window, async move |this, cx| {
-            if confirm.await {
+            if stop.await
+                && let Ok(discard) =
+                    this.update_in(cx, |this, window, cx| confirm_discard(this.unsaved(cx), window, cx))
+                && discard.await
+            {
                 this.update_in(cx, |this, window, cx| {
                     this.save_if_last(window, cx);
                     window.remove_window();
@@ -343,6 +386,17 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// The names of what runs in the window's terminals.
+    pub(super) fn running(&self, cx: &App) -> Vec<String> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Terminal(terminal) => terminal.read(cx).running(),
+                _ => None,
+            })
+            .collect()
     }
 
     pub(super) fn unsaved(&self, cx: &App) -> Vec<Entity<FileEditor>> {
