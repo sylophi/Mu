@@ -8,6 +8,7 @@ gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
         Activity,
+        Bluetooth,
         AppWindow,
         AppWindowMac,
         ArchiveRestore,
@@ -29,6 +30,7 @@ gpui_kit::assets::icon_assets!(
         LayoutGrid,
         Link,
         List,
+        Monitor,
         Network,
         Package,
         PackageOpen,
@@ -43,7 +45,9 @@ gpui_kit::assets::icon_assets!(
         SquareArrowOutUpRight,
         SquarePen,
         Trash,
+        Usb,
         X,
+        Zap,
     ]
 );
 

@@ -1,7 +1,9 @@
 //! The This Mac tab, where you look after the Mac itself, a section at a time.
 
+mod devices;
 mod overview;
 pub mod storage;
+mod updates;
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _,
@@ -10,11 +12,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use crate::{fs::home_dir, session::Tab, workspace::TabEvent};
+use crate::{browser::Refresh, fs::home_dir, session::Tab, workspace::TabEvent};
 use overview::Overview;
 use storage::Storage;
 
 pub fn init(cx: &mut App) {
+    cx.bind_keys([KeyBinding::new("cmd-r", Refresh, Some("ThisMac"))]);
     storage::init(cx);
 }
 
@@ -137,6 +140,7 @@ impl Focusable for ThisMac {
 impl Render for ThisMac {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
+            .key_context("ThisMac")
             .size_full()
             .bg(cx.theme().background)
             .child(self.render_sections(cx))

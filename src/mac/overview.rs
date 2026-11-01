@@ -1,10 +1,16 @@
-//! This Mac's overview, like About This Mac: what the Mac is, what it runs, and how long it's been
-//! up.
+//! This Mac's overview, like About This Mac: what the Mac is, what it runs, how long it's been up,
+//! what's connected to it, and the software updates waiting for it.
 
 use std::ffi::CStr;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Icon, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    spinner::Spinner,
+    v_flex,
+};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
@@ -13,7 +19,13 @@ use crate::{
         monitor::{self, Battery, Monitor},
         registry,
     },
+    browser::Refresh,
     fs,
+};
+
+use super::{
+    devices::{self, Device, Kind},
+    updates::{self, Update},
 };
 
 pub struct Overview {
@@ -22,10 +34,14 @@ pub struct Overview {
     /// What it's made of and runs, as rows of names and values.
     facts: Vec<(&'static str, String)>,
     battery: Option<Battery>,
+    /// Till they've been looked for.
+    devices: Option<Vec<Device>>,
+    updates: Option<anyhow::Result<Vec<Update>>>,
     monitor: Entity<Monitor>,
     focus_handle: FocusHandle,
     /// For how long it's been up.
     _monitor: Subscription,
+    _load: Task<()>,
 }
 
 impl Overview {
@@ -47,14 +63,43 @@ impl Overview {
         // In gigabytes of 2³⁰ bytes, as Apple counts memory.
         facts.extend(sysctl_number(c"hw.memsize").map(|bytes| ("Memory", format!("{} GB", bytes >> 30))));
         facts.push(("Software", format!("macOS {version}{build}")));
-        Self {
+        let mut this = Self {
             model: model.into(),
             facts,
-            battery: monitor::battery(),
+            battery: None,
+            devices: None,
+            updates: None,
             focus_handle: cx.focus_handle(),
             _monitor: cx.observe(&monitor, |_, _, cx| cx.notify()),
             monitor,
-        }
+            _load: Task::ready(()),
+        };
+        this.load(cx);
+        this
+    }
+
+    /// Reads what changes: the battery, what's connected and the updates, which come last as they
+    /// take the longest.
+    fn load(&mut self, cx: &mut Context<Self>) {
+        (self.devices, self.updates) = (None, None);
+        let devices = cx.background_spawn(async { (monitor::battery(), devices::connected()) });
+        let updates = cx.background_spawn(async { updates::pending() });
+        self._load = cx.spawn(async move |this, cx| {
+            let (battery, devices) = devices.await;
+            this.update(cx, |this, cx| {
+                this.battery = battery;
+                this.devices = Some(devices);
+                cx.notify();
+            })
+            .ok();
+            let updates = updates.await;
+            this.update(cx, |this, cx| {
+                this.updates = Some(updates);
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
     }
 
     fn render_battery(&self, battery: Battery, cx: &App) -> impl IntoElement + use<> {
@@ -62,30 +107,100 @@ impl Overview {
         let mut rows = vec![("Charge", format!("{}%{charging}", battery.percent))];
         rows.extend(battery.health.map(|health| ("Maximum capacity", format!("{health}%"))));
         rows.extend(battery.cycles.map(|cycles| ("Cycle count", cycles.to_string())));
-        group("Battery", rows, cx)
+        group("Battery", None, card(rows, cx), cx)
+    }
+
+    fn render_devices(&self, cx: &App) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let list = match &self.devices {
+            None => loading(),
+            Some(devices) if devices.is_empty() => note("Nothing's connected", cx),
+            Some(devices) => list(
+                devices.iter().map(|device| {
+                    let icon = match device.kind {
+                        Kind::Usb => IconName::Usb,
+                        Kind::Thunderbolt => IconName::Zap,
+                        Kind::Bluetooth => IconName::Bluetooth,
+                        Kind::Display => IconName::Monitor,
+                    };
+                    h_flex()
+                        .gap_3()
+                        .child(Icon::new(icon).size(px(16.)).flex_none().text_color(theme.muted_foreground))
+                        .child(div().flex_1().min_w_0().truncate().child(device.name.clone()))
+                        .child(div().flex_none().text_color(theme.muted_foreground).child(device.detail.clone()))
+                }),
+                cx,
+            ),
+        };
+        group("Devices", None, list, cx)
+    }
+
+    fn render_updates(&self, cx: &App) -> impl IntoElement + use<> {
+        let theme = cx.theme();
+        let list = match &self.updates {
+            None => loading(),
+            Some(Err(_)) => note("Couldn't check for updates", cx),
+            Some(Ok(updates)) if updates.is_empty() => note("Up to date", cx),
+            Some(Ok(updates)) => list(
+                updates.iter().map(|update| {
+                    h_flex().gap_3().child(div().flex_1().min_w_0().truncate().child(update.title.clone())).children(
+                        update.size.map(|size| {
+                            div().flex_none().text_color(theme.muted_foreground).child(fs::format_size(size))
+                        }),
+                    )
+                }),
+                cx,
+            ),
+        };
+        let open = Button::new("software-update")
+            .ghost()
+            .small()
+            .label("Software Update")
+            .on_click(|_, _, cx| cx.open_url(updates::SETTINGS));
+        group("Software Updates", Some(open), list, cx)
     }
 }
 
-/// A heading over a card of what it's about.
-fn group(heading: &'static str, rows: Vec<(&'static str, String)>, cx: &App) -> impl IntoElement + use<> {
-    v_flex().gap_2().child(div().font_semibold().child(heading)).child(card(rows, cx))
+/// A heading, with a button at its end, over what it's about.
+fn group(heading: &'static str, button: Option<Button>, content: Div, cx: &App) -> impl IntoElement + use<> {
+    let heading = h_flex().h(px(24.)).justify_between().child(div().font_semibold().child(heading)).children(button);
+    v_flex()
+        .gap_2()
+        .child(heading)
+        .child(content.rounded(cx.theme().radius_lg).border_1().border_color(cx.theme().border))
+}
+
+/// A card of `rows`, one under another.
+fn list(rows: impl Iterator<Item = Div>, cx: &App) -> Div {
+    let theme = cx.theme();
+    v_flex().children(
+        rows.enumerate().map(|(ix, row)| {
+            row.px_4().py_2().text_sm().when(ix > 0, |row| row.border_t_1().border_color(theme.border))
+        }),
+    )
+}
+
+/// A card saying `text` in place of a list.
+fn note(text: &'static str, cx: &App) -> Div {
+    div().px_4().py_2().text_sm().text_color(cx.theme().muted_foreground).child(text)
+}
+
+fn loading() -> Div {
+    h_flex().px_4().py_2().child(Spinner::new().small())
 }
 
 /// A card of facts, a name and its value to a row.
 fn card(rows: Vec<(&'static str, String)>, cx: &App) -> Div {
-    let theme = cx.theme();
-    v_flex().rounded(theme.radius_lg).border_1().border_color(theme.border).children(rows.into_iter().enumerate().map(
-        |(ix, (name, value))| {
+    let muted = cx.theme().muted_foreground;
+    list(
+        rows.into_iter().map(|(name, value)| {
             h_flex()
                 .gap_4()
-                .px_4()
-                .py_2()
-                .text_sm()
-                .when(ix > 0, |row| row.border_t_1().border_color(theme.border))
-                .child(div().flex_none().text_color(theme.muted_foreground).child(name))
+                .child(div().flex_none().text_color(muted).child(name))
                 .child(div().flex_1().min_w_0().text_right().truncate().child(value))
-        },
-    ))
+        }),
+        cx,
+    )
 }
 
 impl Focusable for Overview {
@@ -99,21 +214,30 @@ impl Render for Overview {
         let theme = cx.theme();
         let mut mac = self.facts.clone();
         mac.push(("Up for", format_uptime(self.monitor.read(cx).now.uptime)));
-        div().id("overview").size_full().overflow_y_scroll().track_focus(&self.focus_handle).bg(theme.background).child(
-            v_flex()
-                .max_w(px(720.))
-                .mx_auto()
-                .p_6()
-                .gap_6()
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .child(Icon::new(IconName::Laptop).size(px(22.)).text_color(theme.muted_foreground))
-                        .child(div().text_xl().font_semibold().child(self.model.clone())),
-                )
-                .child(card(mac, cx))
-                .children(self.battery.map(|battery| self.render_battery(battery, cx))),
-        )
+        div()
+            .id("overview")
+            .size_full()
+            .overflow_y_scroll()
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.load(cx)))
+            .bg(theme.background)
+            .child(
+                v_flex()
+                    .max_w(px(720.))
+                    .mx_auto()
+                    .p_6()
+                    .gap_6()
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(Icon::new(IconName::Laptop).size(px(22.)).text_color(theme.muted_foreground))
+                            .child(div().text_xl().font_semibold().child(self.model.clone())),
+                    )
+                    .child(card(mac, cx).rounded(theme.radius_lg).border_1().border_color(theme.border))
+                    .children(self.battery.map(|battery| self.render_battery(battery, cx)))
+                    .child(self.render_devices(cx))
+                    .child(self.render_updates(cx)),
+            )
     }
 }
 
