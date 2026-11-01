@@ -6,8 +6,8 @@ use gpui_kit::*;
 use mu_terminal::TerminalView;
 
 use crate::{
-    activity::Activity, browser::Browser, editor::FileEditor, history::page::HistoryPage, icons, search::Search,
-    session::Tab, settings::page::SettingsPage, storage::Storage,
+    activity::Activity, browser::Browser, editor::FileEditor, history::page::HistoryPage, icons, mac::ThisMac,
+    search::Search, session::Tab, settings::page::SettingsPage,
 };
 
 /// Something in the center pane.
@@ -18,7 +18,7 @@ pub(super) enum Item {
     Editor(Entity<FileEditor>),
     Search(Entity<Search>),
     Activity(Entity<Activity>),
-    Storage(Entity<Storage>),
+    Mac(Entity<ThisMac>),
     History(Entity<HistoryPage>),
     Settings(Entity<SettingsPage>),
 }
@@ -32,7 +32,7 @@ macro_rules! each {
             Item::Editor($entity) => $body,
             Item::Search($entity) => $body,
             Item::Activity($entity) => $body,
-            Item::Storage($entity) => $body,
+            Item::Mac($entity) => $body,
             Item::History($entity) => $body,
             Item::Settings($entity) => $body,
         }
@@ -48,7 +48,7 @@ impl Item {
             Tab::Editor(path) => Item::Editor(cx.new(|cx| FileEditor::new(path, window, cx))),
             Tab::Search(root) => Item::Search(cx.new(|cx| Search::new(root, window, cx))),
             Tab::Activity => Item::Activity(cx.new(|cx| Activity::new(window, cx))),
-            Tab::Storage(dir) => Item::Storage(cx.new(|cx| Storage::new(dir, cx))),
+            Tab::ThisMac | Tab::Storage(_) => Item::Mac(cx.new(|cx| ThisMac::new(tab, cx))),
             Tab::History => Item::History(cx.new(HistoryPage::new)),
             Tab::Settings => Item::Settings(cx.new(SettingsPage::new)),
         }
@@ -61,10 +61,17 @@ impl Item {
             (Item::Editor(editor), Tab::Editor(path)) => editor.read(cx).path() == path,
             (Item::Search(search), Tab::Search(root)) => search.read(cx).root() == root,
             (Item::Activity(_), Tab::Activity)
-            | (Item::Storage(_), Tab::Storage(_))
+            | (Item::Mac(_), Tab::ThisMac | Tab::Storage(_))
             | (Item::History(_), Tab::History)
             | (Item::Settings(_), Tab::Settings) => true,
             _ => false,
+        }
+    }
+
+    /// Has it show `tab`, which it `shows`: This Mac goes to the section asked for.
+    pub(super) fn show(&self, tab: Tab, cx: &mut App) {
+        if let Item::Mac(page) = self {
+            page.update(cx, |page, cx| page.show(tab, cx));
         }
     }
 
@@ -87,7 +94,7 @@ impl Item {
             Item::Editor(e) => e.read(cx).title(),
             Item::Search(e) => e.read(cx).title(cx),
             Item::Activity(_) => "Activity".into(),
-            Item::Storage(_) => "Storage".into(),
+            Item::Mac(_) => "This Mac".into(),
             Item::History(_) => "Undo History".into(),
             Item::Settings(_) => "Settings".into(),
         }
@@ -101,7 +108,7 @@ impl Item {
             Item::Editor(e) => Tab::Editor(e.read(cx).path().to_path_buf()),
             Item::Search(e) => Tab::Search(e.read(cx).root().to_path_buf()),
             Item::Activity(_) => Tab::Activity,
-            Item::Storage(e) => Tab::Storage(e.read(cx).dir()),
+            Item::Mac(e) => e.read(cx).saved(cx),
             Item::History(_) => Tab::History,
             Item::Settings(_) => Tab::Settings,
         }
@@ -118,7 +125,7 @@ impl Item {
             Item::Editor(e) => icons::item(e.read(cx).path(), false, size).into_any_element(),
             Item::Search(_) => lucide(IconName::Search, cx),
             Item::Activity(_) => lucide(IconName::Activity, cx),
-            Item::Storage(_) => lucide(IconName::HardDrive, cx),
+            Item::Mac(_) => lucide(IconName::Laptop, cx),
             Item::History(_) => lucide(IconName::RotateCcwClock, cx),
             Item::Settings(_) => lucide(IconName::Settings, cx),
         }

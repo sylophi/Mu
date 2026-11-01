@@ -1,17 +1,19 @@
 //! The I/O Registry, where macOS's drivers publish what they measure: how busy the GPU is and
-//! which processes use it, how much the disks have read and written, and the battery's charge.
+//! which processes use it, how much the disks have read and written, the battery's charge and what
+//! the Mac is.
 
 use std::{
     ffi::{CStr, c_char, c_void},
     ptr::NonNull,
 };
 
-use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOServiceMatching(name: *const c_char) -> *mut c_void;
     fn IOServiceGetMatchingServices(main_port: u32, matching: *mut c_void, iterator: *mut u32) -> i32;
+    fn IORegistryEntryFromPath(main_port: u32, path: *const c_char) -> u32;
     fn IORegistryEntryGetChildIterator(entry: u32, plane: *const c_char, iterator: *mut u32) -> i32;
     fn IORegistryEntryCreateCFProperty(
         entry: u32,
@@ -39,6 +41,14 @@ pub fn services(class: &CStr) -> Vec<Entry> {
     match unsafe { IOServiceGetMatchingServices(0, IOServiceMatching(class.as_ptr()), &mut iterator) } {
         0 => entries(iterator),
         _ => Vec::new(),
+    }
+}
+
+/// The entry at `path`, like `IODeviceTree:/product`.
+pub fn at(path: &CStr) -> Option<Entry> {
+    match unsafe { IORegistryEntryFromPath(0, path.as_ptr()) } {
+        0 => None,
+        entry => Some(Entry(entry)),
     }
 }
 
@@ -82,6 +92,13 @@ impl Value {
 
     pub fn string(&self) -> Option<String> {
         self.0.downcast_ref::<CFString>().map(CFString::to_string)
+    }
+
+    /// Text the registry keeps as bytes, ending in a NUL, as the device tree does.
+    pub fn text(&self) -> Option<String> {
+        let bytes = self.0.downcast_ref::<CFData>()?.to_vec();
+        let text = bytes.split(|&byte| byte == 0).next()?;
+        Some(String::from_utf8_lossy(text).into_owned())
     }
 
     /// The value under `key`, when this is a dictionary.

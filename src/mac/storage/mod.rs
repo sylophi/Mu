@@ -1,5 +1,5 @@
-//! The Storage tab (⌥⌘S): how full each disk is, then what takes up the room in a folder, biggest
-//! first, to dig into a folder at a time.
+//! This Mac's Storage section (⌥⌘S): how full each disk is, then what takes up the room in a folder,
+//! biggest first, to dig into a folder at a time.
 
 mod scan;
 

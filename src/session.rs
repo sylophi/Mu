@@ -18,6 +18,9 @@ pub enum Tab {
     /// Find in folder, from this folder.
     Search(PathBuf),
     Activity,
+    /// This Mac, at its overview.
+    ThisMac,
+    /// This Mac, at what takes up the room in this folder.
     Storage(PathBuf),
     History,
     Settings,
@@ -30,7 +33,7 @@ impl Tab {
             Tab::Folder(path) | Tab::Terminal(path) | Tab::Editor(path) | Tab::Search(path) | Tab::Storage(path) => {
                 Some(path)
             }
-            Tab::Activity | Tab::History | Tab::Settings => None,
+            Tab::Activity | Tab::ThisMac | Tab::History | Tab::Settings => None,
         }
     }
 }

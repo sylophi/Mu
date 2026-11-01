@@ -2,7 +2,7 @@
 //! GPU, memory, network and disk traffic, then the processes and listening ports.
 
 pub mod monitor;
-mod registry;
+pub mod registry;
 
 use std::cmp::Ordering;
 
@@ -544,7 +544,7 @@ fn load_color(percent: f32, theme: &Theme) -> Hsla {
     }
 }
 
-fn format_uptime(seconds: u64) -> String {
+pub fn format_uptime(seconds: u64) -> String {
     let (days, hours, minutes) = (seconds / 86_400, seconds / 3600 % 24, seconds / 60 % 60);
     match days {
         0 => format!("{hours}h {minutes}m"),

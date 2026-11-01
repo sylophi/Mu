@@ -14,7 +14,7 @@ use objc2_foundation::{NSString, NSURL};
 
 use crate::{fs::home_dir, session::Tab};
 
-const USAGE: &str = "usage: mu [terminal | edit | find | storage | activity | history | settings] [path]
+const USAGE: &str = "usage: mu [terminal | edit | find | storage | activity | mac | history | settings] [path]
 
 Opens a tab in Mu: the folder at path, or a file selected in its folder, unless it's one of those.
 Without a path, it's the current folder.";
@@ -23,13 +23,14 @@ Without a path, it's the current folder.";
 /// path. Whether it takes that path is up to `Tab::path`.
 type Kind = (&'static str, fn(PathBuf) -> Tab);
 
-const KINDS: [Kind; 8] = [
+const KINDS: [Kind; 9] = [
     ("folder", Tab::Folder),
     ("terminal", Tab::Terminal),
     ("edit", Tab::Editor),
     ("find", Tab::Search),
     ("storage", Tab::Storage),
     ("activity", |_| Tab::Activity),
+    ("mac", |_| Tab::ThisMac),
     ("history", |_| Tab::History),
     ("settings", |_| Tab::Settings),
 ];
@@ -171,6 +172,7 @@ mod tests {
         assert_eq!(url, "mu://terminal/Users/me/My%20Code/%231%20%3F%C3%BC");
         assert!(matches!(tab(&url), Some(Tab::Terminal(p)) if p == path));
         assert!(matches!(tab("mu://settings"), Some(Tab::Settings)));
+        assert!(matches!(tab("mu://mac"), Some(Tab::ThisMac)));
         assert!(matches!(tab("file:///tmp/"), Some(Tab::Folder(p)) if p == Path::new("/tmp")));
         assert!(tab("mu://nothing/tmp").is_none());
     }

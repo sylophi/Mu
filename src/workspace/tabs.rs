@@ -18,7 +18,7 @@ use objc2_foundation::NSPoint;
 
 use super::{
     Item, Workspace,
-    actions::{FindInFolder, NewTab, NewTerminal, ShowHistory, ShowSettings, ShowStorage},
+    actions::{FindInFolder, NewTab, NewTerminal, ShowHistory, ShowSettings, ShowThisMac},
     pane::paste_paths,
     parts::{action_button, close_button, menu_item, truncated},
     windows::{ns_window, open, workspaces},
@@ -230,7 +230,7 @@ impl Workspace {
         let buttons = [
             action_button("new-terminal", IconName::SquareTerminal, "New Terminal", NewTerminal),
             action_button("find-in-folder", IconName::FolderSearch, "Find in Folder", FindInFolder),
-            action_button("storage", IconName::HardDrive, "Storage", ShowStorage),
+            action_button("this-mac", IconName::Laptop, "This Mac", ShowThisMac),
             action_button("undo-history", IconName::RotateCcwClock, "Undo History", ShowHistory),
             action_button("settings", IconName::Settings, "Settings", ShowSettings),
         ];
@@ -325,9 +325,7 @@ impl Workspace {
                         }))
                         .item(copy(path))
                     }
-                    Item::Search(_) | Item::Activity(_) | Item::Storage(_) | Item::History(_) | Item::Settings(_) => {
-                        menu
-                    }
+                    Item::Search(_) | Item::Activity(_) | Item::Mac(_) | Item::History(_) | Item::Settings(_) => menu,
                 }
             })
             .into_any_element()

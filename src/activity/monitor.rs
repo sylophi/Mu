@@ -93,6 +93,9 @@ pub enum Thermal {
 pub struct Battery {
     pub percent: i64,
     pub charging: bool,
+    /// How much it holds when full, as a percent of what it held new.
+    pub health: Option<i64>,
+    pub cycles: Option<i64>,
 }
 
 /// What's sampled only while someone's looking.
@@ -442,7 +445,7 @@ fn memory_pressure() -> Pressure {
     }
 }
 
-fn battery() -> Option<Battery> {
+pub fn battery() -> Option<Battery> {
     let battery = registry::services(c"AppleSmartBattery").into_iter().next()?;
     if !battery.get("BatteryInstalled")?.bool()? {
         return None;
@@ -452,6 +455,10 @@ fn battery() -> Option<Battery> {
         // A percent already on Apple silicon, and milliamp hours on Intel.
         percent: number("CurrentCapacity")? * 100 / number("MaxCapacity")?.max(1),
         charging: battery.get("IsCharging").and_then(|charging| charging.bool()).unwrap_or(false),
+        health: number("DesignCapacity")
+            .filter(|&design| design > 0)
+            .and_then(|design| Some((number("AppleRawMaxCapacity")? * 100 / design).min(100))),
+        cycles: number("CycleCount"),
     })
 }
 

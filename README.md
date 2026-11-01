@@ -33,7 +33,7 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 - Terminals as tabs, which open where you are
 - An editor that opens text files in place of TextEdit, and find in folder
 - Activity, for CPU, GPU, memory, network, disks and processes
-- Storage, for what takes up the room
+- This Mac, for what it's made of and what takes up the room
 - Disks you can eject, and file servers on the network
 
 Its light and dark themes follow the system.
@@ -49,7 +49,7 @@ mu terminal         # a terminal here
 mu edit notes.md    # the editor
 mu find             # find in this folder
 mu storage ~        # what takes up the room
-mu activity         # or history, or settings
+mu activity         # or mac, history, or settings
 ```
 
 Other apps can do the same with a link, like `mu://folder/Users/me/Downloads`.
