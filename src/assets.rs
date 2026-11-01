@@ -25,6 +25,7 @@ gpui_kit::assets::icon_assets!(
         Hammer,
         HardDrive,
         Inbox,
+        Laptop,
         LayoutGrid,
         Link,
         List,

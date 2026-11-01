@@ -23,11 +23,9 @@ impl Workspace {
     pub(super) fn open_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         match self.items.iter().position(|item| item.shows(&tab, cx)) {
             Some(ix) => {
+                // Before it takes focus, as what takes it can change.
+                self.items[ix].show(tab, cx);
                 self.activate(ix, window, cx);
-                // Storage shows one folder at a time, so it goes to this one.
-                if let (Item::Storage(storage), Tab::Storage(dir)) = (&self.items[ix], tab) {
-                    storage.update(cx, |storage, cx| storage.show(dir, cx));
-                }
             }
             None => {
                 let item = Item::new(tab, window, cx);
@@ -128,7 +126,7 @@ impl Workspace {
             Item::Editor(editor) => cx.subscribe_in(editor, window, Self::tab_event),
             Item::Search(search) => cx.subscribe_in(search, window, Self::tab_event),
             Item::Activity(activity) => cx.subscribe_in(activity, window, Self::tab_event),
-            Item::Storage(storage) => cx.subscribe_in(storage, window, Self::tab_event),
+            Item::Mac(page) => cx.subscribe_in(page, window, Self::tab_event),
             Item::History(page) => cx.subscribe_in(page, window, Self::tab_event),
             Item::Settings(page) => cx.subscribe_in(page, window, Self::tab_event),
         };

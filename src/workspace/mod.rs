@@ -1,5 +1,5 @@
 //! A window, laid out like Zed: the sidebar dock beside a pane of tabs (folders, terminals, editors,
-//! searches, Activity and Storage), with the preview dock beside a folder in it.
+//! searches, Activity and This Mac), with the preview dock beside a folder in it.
 
 pub mod actions;
 mod docks;
