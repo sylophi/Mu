@@ -1,4 +1,5 @@
-//! What a tab holds: a folder, a terminal, an editor, a search or one of Mu's own pages.
+//! What a tab holds: a folder, a terminal, an editor, a search, an app to remove or one of Mu's own
+//! pages.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon};
@@ -6,8 +7,15 @@ use gpui_kit::*;
 use mu_terminal::TerminalView;
 
 use crate::{
-    activity::Activity, browser::Browser, editor::FileEditor, history::page::HistoryPage, icons, mac::ThisMac,
-    search::Search, session::Tab, settings::page::SettingsPage,
+    activity::Activity,
+    browser::Browser,
+    editor::FileEditor,
+    history::page::HistoryPage,
+    icons,
+    mac::{ThisMac, Uninstall},
+    search::Search,
+    session::Tab,
+    settings::page::SettingsPage,
 };
 
 /// Something in the center pane.
@@ -21,6 +29,7 @@ pub(super) enum Item {
     Mac(Entity<ThisMac>),
     History(Entity<HistoryPage>),
     Settings(Entity<SettingsPage>),
+    Uninstall(Entity<Uninstall>),
 }
 
 /// Does the same with whichever entity `item` holds, as `entity`, whatever kind of tab it is.
@@ -35,6 +44,7 @@ macro_rules! each {
             Item::Mac($entity) => $body,
             Item::History($entity) => $body,
             Item::Settings($entity) => $body,
+            Item::Uninstall($entity) => $body,
         }
     };
 }
@@ -51,6 +61,7 @@ impl Item {
             Tab::ThisMac | Tab::Startup | Tab::Storage(_) => Item::Mac(cx.new(|cx| ThisMac::new(tab, cx))),
             Tab::History => Item::History(cx.new(HistoryPage::new)),
             Tab::Settings => Item::Settings(cx.new(SettingsPage::new)),
+            Tab::Uninstall(app) => Item::Uninstall(cx.new(|cx| Uninstall::new(app, cx))),
         }
     }
 
@@ -60,6 +71,7 @@ impl Item {
         match (self, tab) {
             (Item::Editor(editor), Tab::Editor(path)) => editor.read(cx).path() == path,
             (Item::Search(search), Tab::Search(root)) => search.read(cx).root() == root,
+            (Item::Uninstall(page), Tab::Uninstall(app)) => page.read(cx).path() == app,
             (Item::Activity(_), Tab::Activity)
             | (Item::Mac(_), Tab::ThisMac | Tab::Startup | Tab::Storage(_))
             | (Item::History(_), Tab::History)
@@ -97,6 +109,7 @@ impl Item {
             Item::Mac(_) => "This Mac".into(),
             Item::History(_) => "Undo History".into(),
             Item::Settings(_) => "Settings".into(),
+            Item::Uninstall(e) => e.read(cx).title(),
         }
     }
 
@@ -111,6 +124,7 @@ impl Item {
             Item::Mac(e) => e.read(cx).saved(cx),
             Item::History(_) => Tab::History,
             Item::Settings(_) => Tab::Settings,
+            Item::Uninstall(e) => Tab::Uninstall(e.read(cx).path().to_path_buf()),
         }
     }
 
@@ -128,6 +142,7 @@ impl Item {
             Item::Mac(_) => lucide(IconName::Laptop, cx),
             Item::History(_) => lucide(IconName::RotateCcwClock, cx),
             Item::Settings(_) => lucide(IconName::Settings, cx),
+            Item::Uninstall(e) => icons::item(e.read(cx).path(), true, size).into_any_element(),
         }
     }
 }

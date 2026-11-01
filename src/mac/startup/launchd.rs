@@ -2,7 +2,11 @@
 //! user, and the daemons, which run as root. Switching one off disables it, so it doesn't start
 //! again, and stops it.
 
-use std::{collections::HashMap, path::PathBuf, process::Command};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::Result;
 
@@ -26,6 +30,19 @@ pub enum Scope {
 impl Scope {
     pub const ALL: [Scope; 3] = [Scope::Yours, Scope::Everyone, Scope::System];
 
+    /// Where the job in `plist` is, if it's in a folder launchd starts jobs from, or one an app
+    /// registers its own from.
+    fn of(plist: &Path) -> Option<Scope> {
+        let dir = plist.parent()?;
+        if dir.ends_with("Contents/Library/LaunchAgents") {
+            return Some(Scope::Yours);
+        }
+        if dir.ends_with("Contents/Library/LaunchDaemons") {
+            return Some(Scope::System);
+        }
+        Scope::ALL.into_iter().find(|scope| dir == scope.dir())
+    }
+
     fn dir(self) -> PathBuf {
         match self {
             Scope::Yours => home_dir().join("Library/LaunchAgents"),
@@ -40,6 +57,14 @@ impl Scope {
         match self {
             Scope::System => "system".into(),
             _ => format!("gui/{}", unsafe { libc::getuid() }),
+        }
+    }
+
+    /// Runs launchctl with `args`, as root for a daemon.
+    fn launchctl(self, args: Vec<String>) -> Result<()> {
+        match self {
+            Scope::System => admin::run(Step::Launchctl(args)),
+            _ => fs::run(Command::new("/bin/launchctl").args(args)).map(drop),
         }
     }
 }
@@ -75,13 +100,18 @@ pub fn jobs() -> Vec<Job> {
 fn job(plist: PathBuf, scope: Scope, overrides: &HashMap<String, bool>) -> Option<Job> {
     let job = plist::Value::from_file(&plist).ok()?.into_dictionary()?;
     let label = job.get("Label")?.as_string()?.to_owned();
-    let program = job.get("Program").or_else(|| job.get("ProgramArguments")?.as_array()?.first());
-    let program = program.and_then(plist::Value::as_string).map(PathBuf::from);
+    let program = program(&job);
     let app = program.as_deref().and_then(app_bundle);
     let name = program.as_deref().and_then(fs::program_name).unwrap_or_else(|| label.clone());
     let disabled = job.get("Disabled").and_then(plist::Value::as_boolean).unwrap_or(false);
     let on = overrides.get(&label).copied().unwrap_or(!disabled);
     Some(Job { label, plist, app, name, scope, on })
+}
+
+/// What the job in a plist runs.
+pub fn program(job: &plist::Dictionary) -> Option<PathBuf> {
+    let program = job.get("Program").or_else(|| job.get("ProgramArguments")?.as_array()?.first());
+    program.and_then(plist::Value::as_string).map(PathBuf::from)
 }
 
 /// The jobs launchctl was told to switch on or off in `domain`, over what their plists say.
@@ -116,16 +146,26 @@ pub fn switch(job: &Job, on: bool) -> Result<()> {
         true => (vec!["enable", &target], vec!["bootstrap", &domain, &plist]),
         false => (vec!["disable", &target], vec!["bootout", &target]),
     };
-    let launchctl = |args: Vec<&str>| match job.scope {
-        Scope::System => admin::run(Step::Launchctl(args.into_iter().map(String::from).collect())),
-        _ => fs::run(Command::new("/bin/launchctl").args(args)).map(drop),
-    };
+    let launchctl = |args: Vec<&str>| job.scope.launchctl(args.into_iter().map(String::from).collect());
     admin::session(|| {
         launchctl(keep)?;
         // Starting or stopping it now fails if it already is, or was.
         _ = launchctl(now);
         Ok(())
     })
+}
+
+/// Stops the job in `plist` for now if it's one and it's loaded, as when its plist is about to go,
+/// asking for an administrator's password for a daemon.
+pub fn stop(plist: &Path) -> Result<()> {
+    let Some(scope) = Scope::of(plist) else { return Ok(()) };
+    let job = plist::Value::from_file(plist).ok().and_then(plist::Value::into_dictionary);
+    let Some(label) = job.as_ref().and_then(|job| job.get("Label")?.as_string()) else { return Ok(()) };
+    let target = format!("{}/{label}", scope.domain());
+    if !Command::new("/bin/launchctl").args(["print", &target]).output().is_ok_and(|output| output.status.success()) {
+        return Ok(());
+    }
+    scope.launchctl(vec!["bootout".into(), target])
 }
 
 #[cfg(test)]

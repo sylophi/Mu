@@ -1,5 +1,5 @@
-//! The toolbar over a folder: back, forward and up, the path bar, grid or list, the Trash and the
-//! filter.
+//! The toolbar over a folder: back, forward and up, the path bar, grid or list, the Trash,
+//! Uninstall and the filter.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -35,6 +35,7 @@ impl Workspace {
         let path = browser.path().to_path_buf();
         let in_trash = browser.in_trash();
         let selected = browser.status().1 > 0;
+        let can_uninstall = browser.can_uninstall();
         // Short of room, what's after the path bar goes under it.
         h_flex()
             .min_h(px(36.))
@@ -93,6 +94,16 @@ impl Workspace {
                         .label("Empty Trash")
                         .disabled(cx.global::<Places>().trash == 0)
                         .on_click(|_, window, cx| empty_trash(window, cx)),
+                )
+            })
+            .when(can_uninstall, |bar| {
+                bar.child(
+                    Button::new("uninstall")
+                        .ghost()
+                        .small()
+                        .icon(IconName::PackageX)
+                        .tooltip_with_action("Uninstall…", &browser::Uninstall, Some("FileList"))
+                        .on_click(cx.listener(|this, _, _, cx| this.with_folder(cx, |b, cx| b.uninstall(cx)))),
                 )
             })
             .child(self.render_filter(window, cx))

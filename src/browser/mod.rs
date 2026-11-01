@@ -64,6 +64,7 @@ gpui_kit::actions!(
         OpenInNewTab,
         OpenInNewWindow,
         ShowPackageContents,
+        Uninstall,
         Rename,
         CancelRename,
         Trash,
@@ -397,6 +398,7 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &OpenInNewTab, _, cx| this.open_in_new_tab(cx)))
             .on_action(cx.listener(|this, _: &OpenInNewWindow, _, cx| this.open_in_new_window(cx)))
             .on_action(cx.listener(|this, _: &ShowPackageContents, window, cx| this.show_package_contents(window, cx)))
+            .on_action(cx.listener(|this, _: &Uninstall, _, cx| this.uninstall(cx)))
             .on_action(cx.listener(|this, _: &OpenInTerminal, _, cx| this.open_in_terminal(cx)))
             .on_action(cx.listener(|this, _: &OpenInEditor, _, cx| this.open_in_editor(cx)))
             .on_action(cx.listener(|this, _: &QuickLook, _, cx| {

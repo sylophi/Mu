@@ -116,6 +116,17 @@ pub fn transfer(op: Op, paths: Vec<PathBuf>, dir: PathBuf, window: &mut Window, 
 /// Moves `paths` to the Trash (see `run`), once it's asked about any that are locked, like Finder.
 /// Resolves to what it did, or None when it's cancelled.
 pub fn trash(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Option<Done>> {
+    trash_after(paths, || Ok(()), window, cx)
+}
+
+/// Like `trash`, once `first` has done what has to be done before, in the same operation, like
+/// stopping what runs from them. Nothing goes if it fails.
+pub fn trash_after(
+    paths: Vec<PathBuf>,
+    first: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) -> Task<Option<Done>> {
     let locked: Vec<_> = paths.iter().filter(|path| fs::is_locked(path)).collect();
     let question = match locked.as_slice() {
         [] => None,
@@ -132,7 +143,11 @@ pub fn trash(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Opt
         {
             return None;
         }
-        let task = cx.update(|window, cx| run(Op::Trash, move |_| fs::trash(&paths), window, cx)).ok()?;
+        let work = move |_: &Progress| match first() {
+            Ok(()) => fs::trash(&paths),
+            Err(error) => Done { error: Some(error), ..Done::default() },
+        };
+        let task = cx.update(|window, cx| run(Op::Trash, work, window, cx)).ok()?;
         Some(task.await)
     })
 }

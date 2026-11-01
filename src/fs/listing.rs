@@ -6,7 +6,7 @@ use std::{
     fs, io,
     os::{
         fd::AsRawFd as _,
-        unix::{ffi::OsStrExt as _, fs::OpenOptionsExt as _, fs::PermissionsExt as _},
+        unix::{ffi::OsStrExt as _, fs::MetadataExt as _, fs::OpenOptionsExt as _, fs::PermissionsExt as _},
     },
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -92,6 +92,22 @@ pub enum Shared {
     Clone(u64),
     /// Hard links to one file.
     Links(u64),
+}
+
+/// The room `path` takes on its disk, with everything in it for a folder, counted as Storage does.
+pub fn disk_usage(path: &Path) -> u64 {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => list_usage(path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| match item.folder {
+                true => disk_usage(&path.join(&*item.name)),
+                false => item.size + item.shared.map_or(0, |(_, bytes)| bytes),
+            })
+            .sum(),
+        Ok(meta) => meta.blocks() * 512,
+        Err(_) => 0,
+    }
 }
 
 /// Lists what's in `dir` and the room each file takes, like `list_dir` but with only that.

@@ -219,7 +219,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(error) = monitor::quit(&holders) {
+        if let Err(error) = monitor::quit(&holders, libc::SIGHUP) {
             window.toast_error(&error, cx);
             return;
         }

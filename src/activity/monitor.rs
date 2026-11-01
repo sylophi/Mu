@@ -501,10 +501,10 @@ fn parse_ports(lsof: &str) -> Vec<Port> {
 }
 
 /// Quits each of `holders`: an app as its Quit menu item does, so it can ask to save its documents
-/// first, and any other process with SIGHUP, as closing its terminal does, which ends a shell where
-/// SIGTERM doesn't. One that keeps running anyway, like a command run with nohup, is left to Force
-/// Quit.
-pub fn quit(holders: &[fs::Holder]) -> anyhow::Result<()> {
+/// first, and any other process with `signal`. SIGHUP is what closing its terminal sends, which ends
+/// a shell where SIGTERM doesn't, though a background helper may take it as a cue to reload. One
+/// that keeps running anyway, like a command run with nohup, is left to Force Quit.
+pub fn quit(holders: &[fs::Holder], signal: i32) -> anyhow::Result<()> {
     let apps = NSWorkspace::sharedWorkspace().runningApplications();
     for holder in holders {
         let app = holder.exe.as_deref().and_then(fs::app_bundle).and_then(|bundle| {
@@ -512,7 +512,7 @@ pub fn quit(holders: &[fs::Holder]) -> anyhow::Result<()> {
         });
         match app {
             Some(app) => _ = app.terminate(),
-            None => signal(holder.pid, libc::SIGHUP).with_context(|| format!("Couldn't quit {}", holder.name))?,
+            None => self::signal(holder.pid, signal).with_context(|| format!("Couldn't quit {}", holder.name))?,
         }
     }
     Ok(())

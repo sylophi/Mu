@@ -62,6 +62,21 @@ pub fn holders(path: &Path, volume: bool) -> Vec<Holder> {
         .collect()
 }
 
+/// The processes whose program is in `dir`, like an app and its helpers.
+pub fn running_in(dir: &Path) -> Vec<Holder> {
+    // Programs go by their real paths, like /private/var for /var.
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let mut pids = vec![0 as c_int; 8192];
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * size_of::<c_int>()) as c_int) };
+    pids.truncate(count.max(0) as usize);
+    pids.into_iter()
+        .filter_map(|pid| {
+            let exe = executable(pid as u32).filter(|exe| exe.starts_with(&dir))?;
+            Some(Holder::new(pid as u32, Some(exe)))
+        })
+        .collect()
+}
+
 fn executable(pid: u32) -> Option<PathBuf> {
     let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let len = unsafe { libc::proc_pidpath(pid as c_int, path.as_mut_ptr().cast(), path.len() as u32) };
@@ -92,7 +107,7 @@ pub(super) fn distinct(holders: &[Holder]) -> Vec<&str> {
 mod tests {
     use std::{fs::File, process::Command};
 
-    use super::{Holder, holders, names};
+    use super::{Holder, holders, names, running_in};
     use crate::fs::Scratch;
 
     #[test]
@@ -109,6 +124,18 @@ mod tests {
         sleep.kill().unwrap();
         sleep.wait().unwrap();
         assert_eq!(found.as_deref(), Some("sleep"));
+    }
+
+    #[test]
+    fn finds_what_runs_from_a_folder() {
+        let scratch = Scratch::new("running-in");
+        let program = scratch.0.join("sleep");
+        std::fs::copy("/bin/sleep", &program).unwrap();
+        let mut sleep = Command::new(&program).arg("30").spawn().unwrap();
+        let found = running_in(&scratch.0).into_iter().any(|holder| holder.pid == sleep.id());
+        sleep.kill().unwrap();
+        sleep.wait().unwrap();
+        assert!(found);
     }
 
     #[test]
