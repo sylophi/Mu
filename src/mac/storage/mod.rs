@@ -36,11 +36,7 @@ use scan::{Counted, Kind, Node, add, remove, sort};
 
 pub fn init(cx: &mut App) {
     let context = Some("Storage");
-    cx.bind_keys([
-        KeyBinding::new("cmd-r", Refresh, context),
-        KeyBinding::new("cmd-z", Undo, context),
-        KeyBinding::new("cmd-shift-z", Redo, context),
-    ]);
+    cx.bind_keys([KeyBinding::new("cmd-z", Undo, context), KeyBinding::new("cmd-shift-z", Redo, context)]);
 }
 
 /// A disk and how full it is.
