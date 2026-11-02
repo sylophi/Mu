@@ -26,6 +26,7 @@ use crate::{
     drag::DropFiles as _,
     fs::{self, Entry},
     permissions::{self, Permission, Permissions, Status},
+    places::Places,
     quicklook,
     settings::Settings,
     thumbnails::Cache,
@@ -174,12 +175,14 @@ pub struct Browser {
     layout: Option<Layout>,
     /// Where each visible item's icon is centered in the layout.
     spots: Vec<Point<Pixels>>,
+    /// The Trashes as `Places` last had them, to tell when disks change them.
+    trash_dirs: Vec<PathBuf>,
     _load: Task<()>,
     _watch: Task<()>,
     /// Watches the folders expanded in the listing along with it.
     _watch_expanded: Task<()>,
     _settings: Subscription,
-    _in_window: [Subscription; 2],
+    _in_window: [Subscription; 3],
 }
 
 impl EventEmitter<TabEvent> for Browser {}
@@ -193,7 +196,7 @@ impl Focusable for Browser {
 impl Browser {
     pub fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            path,
+            path: shown(path, cx),
             back: Vec::new(),
             forward: Vec::new(),
             listing: Listing::default(),
@@ -218,6 +221,7 @@ impl Browser {
             tiles: Cache::framed(TILE_ICON),
             layout: None,
             spots: Vec::new(),
+            trash_dirs: cx.global::<Places>().trash_dirs.clone(),
             _load: Task::ready(()),
             _watch: Task::ready(()),
             _watch_expanded: Task::ready(()),
@@ -273,7 +277,7 @@ impl Browser {
     /// Shows `paths`, which are all in one folder, selected there.
     pub fn reveal(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(first) = paths.first() else { return };
-        let Some(parent) = first.parent().map(Path::to_path_buf) else {
+        let Some(parent) = first.parent().map(|parent| shown(parent.to_path_buf(), cx)) else {
             return self.navigate(first.clone(), window, cx);
         };
         if parent == self.path {
@@ -288,6 +292,7 @@ impl Browser {
 
     /// Goes to `path`, selecting whichever of `select` are in it.
     fn go(&mut self, path: PathBuf, select: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        let path = shown(path, cx);
         if path == self.path {
             return;
         }
@@ -331,7 +336,7 @@ impl Browser {
     }
 
     /// What it keeps up with in the window it's in.
-    fn observe_in_window(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 2] {
+    fn observe_in_window(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 3] {
         [
             // Opens the folder as soon as Full Disk Access is switched on.
             cx.observe_in(&Permissions::global(cx), window, |this, permissions, window, cx| {
@@ -346,16 +351,34 @@ impl Browser {
                 }
                 this.prefetch_cursor(window, cx);
             }),
+            // The Trash shows each disk's, which come and go with the disks.
+            cx.observe_global_in::<Places>(window, |this, window, cx| {
+                let dirs = &cx.global::<Places>().trash_dirs;
+                if *dirs != this.trash_dirs {
+                    this.trash_dirs = dirs.clone();
+                    // It may have got the Trash ready to open, as it was.
+                    this.prefetch = None;
+                    if this.in_trash() {
+                        this.watch(listing::watcher(this.trash_dirs.clone(), cx), window, cx);
+                        this.load(window, cx);
+                    }
+                }
+            }),
         ]
     }
 
     /// Follows its tab into another window, which it keeps up with and loads into from then on.
     pub fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._in_window = Self::observe_in_window(window, cx);
-        self.watch(listing::watcher(vec![self.path.clone()], cx), window, cx);
+        self.watch(listing::watcher(listing::shown_dirs(&self.path, cx), cx), window, cx);
         self.watch_expanded(window, cx);
         self.load(window, cx);
     }
+}
+
+/// Where `path` shows: any disk's Trash shows in the Trash, with the others.
+fn shown(path: PathBuf, cx: &App) -> PathBuf {
+    if cx.global::<Places>().trash_dirs.contains(&path) { fs::trash_dir() } else { path }
 }
 
 impl Render for Browser {

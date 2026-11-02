@@ -76,6 +76,16 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
+/// What `read` finds in each of `dirs`, together. Only the first not opening fails it, as the
+/// Trash, which shows each disk's, fails only when the startup disk's does.
+pub fn read_dirs<T>(dirs: &[PathBuf], read: impl Fn(&Path) -> io::Result<Vec<T>>) -> io::Result<Vec<T>> {
+    let mut found = read(&dirs[0])?;
+    for dir in &dirs[1..] {
+        found.extend(read(dir).unwrap_or_default());
+    }
+    Ok(found)
+}
+
 /// What an item takes up on disk.
 pub struct Usage {
     pub name: Box<OsStr>,

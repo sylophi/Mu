@@ -6,7 +6,7 @@ use std::{
     io,
     ops::{Index, Range},
     os::unix::ffi::OsStrExt as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 
@@ -22,6 +22,7 @@ use crate::{
     fs::{self, Changes, Entry},
     icons,
     permissions::Permissions,
+    places::Places,
     settings::Settings,
 };
 
@@ -199,13 +200,14 @@ impl Browser {
     fn list(&self, path: PathBuf, window: &Window, cx: &App) -> Task<Listed> {
         let (sort, descending, scale) = (self.listing.sort, self.listing.descending, window.scale_factor());
         let (room, show_hidden) = (self.room(cx), Settings::get(cx).show_hidden);
+        let dirs = shown_dirs(&path, cx);
         cx.background_spawn(async move {
             let layout = Layout::read(&path, scale);
             // Sorted here, so sorting it again on the main thread only checks the order.
-            let listing = fs::list_dir(&path).map(|entries| match layout {
+            let listing = fs::read_dirs(&dirs, fs::list_dir).map(|entries| match layout {
                 // A folder Finder lays out shows as Finder has it, whatever the room.
-                Some(_) => (expand(entries, 0, show_hidden, sort, descending).0, 0..usize::MAX),
-                None => expand(entries, room, show_hidden, sort, descending),
+                Some(_) => (expand(entries, &path, 0, show_hidden, sort, descending).0, 0..usize::MAX),
+                None => expand(entries, &path, room, show_hidden, sort, descending),
             });
             (listing, layout)
         })
@@ -240,7 +242,7 @@ impl Browser {
         if path == self.path {
             return;
         }
-        let changes = watcher(vec![path.clone()], cx);
+        let changes = watcher(shown_dirs(&path, cx), cx);
         let settings = Settings::get(cx);
         let (show_hidden, first) = (settings.show_hidden, self.screenful(settings.grid));
         let (sender, receiver) = smol::channel::bounded(1);
@@ -302,7 +304,7 @@ impl Browser {
                 (prefetch.changes, self.list(self.path.clone(), window, cx))
             }
             Some(prefetch) => (prefetch.changes, prefetch.listing),
-            None => (watcher(vec![self.path.clone()], cx), self.list(self.path.clone(), window, cx)),
+            None => (watcher(shown_dirs(&self.path, cx), cx), self.list(self.path.clone(), window, cx)),
         };
         self.watch(changes, window, cx);
         self.load_from(listing, LISTING_WAIT, window, cx);
@@ -381,8 +383,8 @@ impl Browser {
         let select: Vec<SharedString> = after
             .select
             .iter()
-            .filter_map(|path| path.strip_prefix(&self.path).ok())
-            .filter(|key| !key.as_os_str().is_empty())
+            .filter(|path| **path != self.path)
+            .map(|path| path.strip_prefix(&self.path).unwrap_or(path))
             .map(|key| SharedString::from(key.to_string_lossy().into_owned()))
             .collect();
         let selecting = !select.is_empty();
@@ -470,13 +472,22 @@ pub(super) fn watcher(paths: Vec<PathBuf>, cx: &App) -> Changes {
     fs::watch(paths, true, Duration::from_millis(120), cx.background_executor())
 }
 
-/// A folder's `entries`, sorted, with the items of the folders in them under them: a level at a
+/// The folders whose items show at `path`: each disk's Trash in the Trash, or else just it.
+pub(super) fn shown_dirs(path: &Path, cx: &App) -> Vec<PathBuf> {
+    match *path == fs::trash_dir() {
+        true => cx.global::<Places>().trash_dirs.clone(),
+        false => vec![path.to_path_buf()],
+    }
+}
+
+/// The `entries` of `folder`, sorted, with the items of the folders in them under them: a level at a
 /// time, each folder whose items fit in the `room` left, so as much as fits shows without a click.
 /// Links, aliases, other disks and what's only in iCloud stay as they are, as reading them can take
 /// a while or download them, like empty folders, which have nothing to show. Also gives
 /// the rooms it comes out the same in, so it's only done again once the room leaves them.
 fn expand(
     mut entries: Vec<Entry>,
+    folder: &Path,
     room: usize,
     show_hidden: bool,
     sort: SortKey,
@@ -540,14 +551,15 @@ fn expand(
     // With less room than it takes, a folder in it closes.
     let fewer = if inside.is_empty() { 0 } else { used };
     let mut items = Vec::new();
-    flatten(entries, None, 0, &mut inside, &mut items);
+    flatten(entries, folder, None, 0, &mut inside, &mut items);
     (items, fewer..more)
 }
 
-/// Adds `entries`, in folder `parent` (by key) `depth` folders in, to `items`, each followed by
-/// what's `inside` it.
+/// Adds `entries`, in folder `parent` (by key) `depth` folders into `folder`, to `items`, each
+/// followed by what's `inside` it.
 fn flatten(
     entries: Vec<Entry>,
+    folder: &Path,
     parent: Option<&str>,
     depth: usize,
     inside: &mut HashMap<PathBuf, Vec<Entry>>,
@@ -556,12 +568,14 @@ fn flatten(
     for entry in entries {
         let key: SharedString = match parent {
             Some(parent) => format!("{parent}/{}", entry.name).into(),
-            None => entry.name.clone(),
+            None if entry.path.parent() == Some(folder) => entry.name.clone(),
+            // What's elsewhere, like another disk's Trash in the Trash, goes by its whole path.
+            None => entry.path.to_string_lossy().into_owned().into(),
         };
         let children = inside.remove(&entry.path);
         items.push(Item { entry, key: key.clone(), depth, expanded: children.is_some() });
         if let Some(children) = children {
-            flatten(children, Some(&key), depth + 1, inside, items);
+            flatten(children, folder, Some(&key), depth + 1, inside, items);
         }
     }
 }
@@ -697,7 +711,7 @@ pub(super) mod tests {
         }
         std::fs::write(dir.join("a/.hidden"), "").unwrap();
         std::fs::write(dir.join("file"), "").unwrap();
-        let expand = |room| expand(fs::list_dir(dir).unwrap(), room, false, SortKey::Name, false).0;
+        let expand = |room| expand(fs::list_dir(dir).unwrap(), dir, room, false, SortKey::Name, false).0;
         // Five rows, then a's two (its hidden file doesn't count), and b's one. big's three don't fit
         // in the two left, and empty has nothing to show. c's goes in the next level.
         let items = expand(9);
@@ -706,13 +720,30 @@ pub(super) mod tests {
         assert_eq!(keys(&expand(5)), ["a", "b", "big", "empty", "file"]);
         // It comes out the same until c closes, a row less, or what's in z might fit, a row more.
         // With nothing expanded, it does until something might fit.
-        let fits = |room| super::expand(fs::list_dir(dir).unwrap(), room, false, SortKey::Name, false).1;
+        let fits = |room| super::expand(fs::list_dir(dir).unwrap(), dir, room, false, SortKey::Name, false).1;
         assert_eq!(fits(9), 9..10);
         assert_eq!(fits(5), 0..6);
         // Sorted the other way, what's in each folder stays under it.
         assert_eq!(
             keys(&sort_tree(items, SortKey::Name, true)),
             ["empty", "big", "b", "  b/c", "    b/c/z", "a", "  a/y", "  a/x", "file"]
+        );
+    }
+
+    #[test]
+    fn tells_apart_items_of_one_name_from_another_folder() {
+        // Like the Trash, which shows each disk's.
+        let scratch = Scratch::new("elsewhere");
+        let (home, other) = (scratch.0.join("home"), scratch.0.join("other"));
+        for dir in [&home, &other] {
+            std::fs::create_dir_all(dir.join("a")).unwrap();
+            std::fs::write(dir.join("a/x"), "").unwrap();
+        }
+        let entries = fs::read_dirs(&[home.clone(), other.clone()], fs::list_dir).unwrap();
+        let elsewhere = other.join("a").display().to_string();
+        assert_eq!(
+            keys(&expand(entries, &home, 9, false, SortKey::Name, false).0),
+            ["a", "  a/x", &elsewhere, &format!("  {elsewhere}/x")]
         );
     }
 }

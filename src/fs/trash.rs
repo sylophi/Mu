@@ -3,7 +3,7 @@
 
 use std::{
     ffi::{CStr, OsString},
-    fs, io,
+    fs, io, iter,
     os::{
         macos::fs::MetadataExt as _,
         unix::ffi::{OsStrExt as _, OsStringExt as _},
@@ -18,12 +18,31 @@ use objc2_foundation::NSFileManager;
 use super::{
     Done, Progress, Undo,
     admin::{self, Step},
-    c_path, delete_path, disk_name, display_name, each, file_url, same_volume, trash_dir, unique_path, xattr,
+    c_path, delete_path, disk_name, display_name, each, file_url, read_dirs, same_volume, trash_dir, unique_path,
+    volumes, xattr,
 };
 
-/// What's in the Trash, leaving out the files Finder keeps there.
+/// The Trashes Finder shows as one: the startup disk's, then each other disk's. A disk's holds what
+/// was trashed from it, and only comes to be when something first is.
+pub fn trash_dirs() -> Vec<PathBuf> {
+    // Things on a share from another computer are deleted right away instead.
+    let disks = volumes().into_iter().skip(1).filter(|volume| !volume.network);
+    iter::once(trash_dir()).chain(disks.map(|disk| disk_trash(&disk.path)).filter(|dir| dir.is_dir())).collect()
+}
+
+/// Where the Trash is on the disk mounted at `root`, if it's not the startup disk.
+fn disk_trash(root: &Path) -> PathBuf {
+    root.join(".Trashes").join(unsafe { libc::getuid() }.to_string())
+}
+
+/// What's in the Trashes, leaving out the files Finder keeps there. Only the startup disk's not
+/// opening fails it.
 pub fn trash_items() -> io::Result<Vec<PathBuf>> {
-    let entries = fs::read_dir(trash_dir())?.flatten();
+    read_dirs(&trash_dirs(), items_in)
+}
+
+fn items_in(dir: &Path) -> io::Result<Vec<PathBuf>> {
+    let entries = fs::read_dir(dir)?.flatten();
     Ok(entries
         .filter(|entry| !matches!(entry.file_name().to_str(), Some(".DS_Store" | ".localized")))
         .map(|entry| entry.path())
@@ -128,7 +147,7 @@ pub fn put_back(paths: &[PathBuf]) -> Done {
     Done { error: unknown.or(done.error), ..done }
 }
 
-/// Deletes everything in the Trash for good.
+/// Deletes everything in the Trashes for good.
 pub fn empty_trash() -> Result<()> {
     let items = trash_items().context("Couldn't open the Trash")?;
     let (_, error) =

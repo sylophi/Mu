@@ -14,6 +14,7 @@ use gpui_kit::*;
 use crate::{
     fs::{self, Done, Progress},
     history::{self, Op},
+    places,
     theme::Toasts as _,
 };
 
@@ -65,7 +66,9 @@ pub fn track<R: Send + 'static>(
         cx.update(|cx| {
             cx.update_global::<Transfers, _>(|transfers, _| {
                 transfers.0.retain(|transfer| !Arc::ptr_eq(&transfer.progress, &progress))
-            })
+            });
+            // It may have trashed the first thing from a disk, which gives the disk its Trash.
+            places::find_trashes(cx);
         });
         result
     })
