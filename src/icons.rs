@@ -24,6 +24,7 @@ use objc2::{
 };
 use objc2_app_kit::{NSGraphicsContext, NSImage, NSImageNameTrashEmpty, NSImageNameTrashFull, NSWorkspace};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+use objc2_core_graphics::CGContext;
 use objc2_foundation::NSString;
 use objc2_uniform_type_identifiers::{UTType, UTTypeData, UTTypeFolder, UTTypeUnixExecutable};
 
@@ -67,7 +68,7 @@ pub fn entry(entry: &Entry, size: Pixels) -> Div {
 /// that's about to open.
 pub fn prefetch(entry: &Entry, size: Pixels, scale: f32, cx: &mut App) {
     let (own, generic) = icons_of(entry);
-    get((own.unwrap_or(generic), side(size, scale)), None, cx);
+    get((own.unwrap_or(generic), Side::new(size, scale)), None, cx);
 }
 
 /// The icon of its own `entry` shows, if macOS draws it one, and the one for its kind.
@@ -115,16 +116,26 @@ fn generic(path: &Path, is_dir: bool, program: bool) -> Of {
 /// The icon for `generic`, `size` big, until the one for `own` is drawn, if there is an `own`.
 fn icon(own: Option<Of>, generic: Of, size: Pixels) -> Img {
     let draw = move |window: &mut Window, cx: &mut App| {
-        let (side, view) = (side(size, window.scale_factor()), window.current_view());
+        let (side, view) = (Side::new(size, window.scale_factor()), window.current_view());
         let mut icon = |of: &Of| get((of.clone(), side), Some(view), cx);
         own.as_ref().and_then(&mut icon).or_else(|| icon(&generic)).map(Ok)
     };
     img(ImageSource::Custom(Arc::new(draw))).size(size).flex_none()
 }
 
-/// An icon's side in device pixels, for `size` at `scale`.
-fn side(size: Pixels, scale: f32) -> u32 {
-    (f32::from(size) * scale).round() as u32
+/// How big an icon is drawn: its side in device pixels, and the scale of the display it's for.
+/// macOS draws some icons differently by scale, like an app's 16 point one at 1x in a gray frame.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Side {
+    pixels: u32,
+    scale: u32,
+}
+
+impl Side {
+    /// For `size` at `scale`.
+    fn new(size: Pixels, scale: f32) -> Self {
+        Self { pixels: (f32::from(size) * scale).round() as u32, scale: scale.round() as u32 }
+    }
 }
 
 /// Mu's logo, `size` big: the μ of its app icon, in the theme's colors.
@@ -141,13 +152,12 @@ pub fn logo_colors(theme: &Theme) -> [Hsla; 4] {
     [theme.cyan, theme.green, theme.yellow, theme.red]
 }
 
-/// macOS's icons drawn so far, by what they're for and their side in device pixels, kept for as
-/// long as Mu runs.
+/// macOS's icons drawn so far, by what they're for and how big, kept for as long as Mu runs.
 #[derive(Default)]
 struct Icons {
-    drawn: HashMap<Of, BTreeMap<u32, Option<Arc<RenderImage>>>>,
+    drawn: HashMap<Of, BTreeMap<Side, Option<Arc<RenderImage>>>>,
     /// The icons being drawn, and the views waiting for them.
-    drawing: HashMap<(Of, u32), HashSet<EntityId>>,
+    drawing: HashMap<(Of, Side), HashSet<EntityId>>,
 }
 
 impl Global for Icons {}
@@ -155,7 +165,7 @@ impl Global for Icons {}
 /// The icon for `key`. Until it's drawn that size, it's the one drawn nearest that size, so a thing
 /// already showing somewhere doesn't show as something else first. None when it's not drawn at all.
 /// `view` is notified once it's drawn.
-fn get(key: (Of, u32), view: Option<EntityId>, cx: &mut App) -> Option<Arc<RenderImage>> {
+fn get(key: (Of, Side), view: Option<EntityId>, cx: &mut App) -> Option<Arc<RenderImage>> {
     let icons = cx.default_global::<Icons>();
     let (of, side) = &key;
     let sides = icons.drawn.get(of);
@@ -186,7 +196,7 @@ pub fn refresh(paths: &[PathBuf], cx: &mut App) {
 }
 
 /// Draws `key`'s icon, unless it's being drawn already, and notifies `view` once it is.
-fn start_drawing(key: (Of, u32), view: Option<EntityId>, cx: &mut App) {
+fn start_drawing(key: (Of, Side), view: Option<EntityId>, cx: &mut App) {
     let drawing = &mut cx.default_global::<Icons>().drawing;
     let first = !drawing.contains_key(&key);
     drawing.entry(key.clone()).or_default().extend(view);
@@ -196,7 +206,7 @@ fn start_drawing(key: (Of, u32), view: Option<EntityId>, cx: &mut App) {
 }
 
 /// Draws `key`'s icon in the background, then shows it.
-fn draw_later(key: (Of, u32), cx: &mut App) {
+fn draw_later(key: (Of, Side), cx: &mut App) {
     let (of, side) = key.clone();
     let icon = cx.background_spawn(async move { autoreleasepool(|_| draw(&of, side)) });
     cx.spawn(async move |cx| {
@@ -228,15 +238,18 @@ pub fn native(path: &Path) -> Option<Retained<NSImage>> {
     ns_image(&Of::Path(path.to_path_buf()))
 }
 
-/// The icon macOS draws for `of`, `side` pixels square.
-fn draw(of: &Of, side: u32) -> Option<Arc<RenderImage>> {
+/// The icon macOS draws for `of`, `side` big.
+fn draw(of: &Of, side: Side) -> Option<Arc<RenderImage>> {
     let image = ns_image(of)?;
-    // Drawn in a context its size, an icon is drawn the way it's made for that size.
-    let pixels = thumbnails::bitmap(side as usize, side as usize, |context| {
+    // Drawn in a context its size and scale, an icon is drawn the way it's made for that size.
+    let pixels = thumbnails::bitmap(side.pixels as usize, side.pixels as usize, |context| {
+        let scale = side.scale as f64;
+        CGContext::scale_ctm(Some(context), scale, scale);
         NSGraphicsContext::setCurrentContext(Some(&NSGraphicsContext::graphicsContextWithCGContext_flipped(
             context, false,
         )));
-        image.drawInRect(CGRect::new(CGPoint::ZERO, CGSize::new(side as f64, side as f64)));
+        let points = side.pixels as f64 / scale;
+        image.drawInRect(CGRect::new(CGPoint::ZERO, CGSize::new(points, points)));
         NSGraphicsContext::setCurrentContext(None);
     })?;
     // Most folders look the same, and so do many kinds of file. They share one picture, so the GPU
