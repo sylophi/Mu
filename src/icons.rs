@@ -17,10 +17,14 @@ use std::{
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use image::Frame;
-use objc2::rc::{Retained, autoreleasepool};
-use objc2_app_kit::{NSGraphicsContext, NSImage, NSImageNameTrashEmpty, NSWorkspace};
+use objc2::{
+    AnyThread as _, msg_send,
+    rc::{Retained, autoreleasepool},
+    runtime::{AnyClass, AnyObject},
+};
+use objc2_app_kit::{NSGraphicsContext, NSImage, NSImageNameTrashEmpty, NSImageNameTrashFull, NSWorkspace};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSString, NSURLEffectiveIconKey};
+use objc2_foundation::NSString;
 use objc2_uniform_type_identifiers::{UTType, UTTypeData, UTTypeFolder, UTTypeUnixExecutable};
 
 use crate::{
@@ -256,18 +260,23 @@ fn ns_image(of: &Of) -> Option<Retained<NSImage>> {
             workspace.iconForContentType(kind.as_deref().unwrap_or(unsafe { UTTypeData }))
         }
         // On disk, it's just a hidden folder.
-        Of::Path(path) if *path == fs::trash_dir() => NSImage::imageNamed(unsafe { NSImageNameTrashEmpty })?,
+        Of::Path(path) if *path == fs::trash_dir() => {
+            let full = fs::trash_items().is_ok_and(|items| !items.is_empty());
+            NSImage::imageNamed(unsafe { if full { NSImageNameTrashFull } else { NSImageNameTrashEmpty } })?
+        }
         Of::Type(identifier) => {
             workspace.iconForContentType(&*UTType::typeWithIdentifier(&NSString::from_str(identifier))?)
         }
         // A link shows what it leads to. Its badge goes on separately, so it can go on pictures too.
         Of::Path(path) => {
             let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-            // Asked through a URL, as `iconForFile` keeps giving a path the icon it first had.
-            let url = crate::fs::file_url(&path);
-            let mut icon = None;
-            unsafe { url.getResourceValue_forKey_error(&mut icon, NSURLEffectiveIconKey) }.ok()?;
-            icon?.downcast::<NSImage>().ok()?
+            // Asked of IconServices, the way Finder asks, as AppKit's own ways draw a folder with
+            // things in it without the sheet of paper Finder shows in it.
+            let factory = AnyClass::get(c"ISIconFactory")?;
+            let icon: Option<Retained<AnyObject>> =
+                unsafe { msg_send![factory, _iconForURL: &*crate::fs::file_url(&path)] };
+            let image: Option<Retained<NSImage>> = unsafe { msg_send![NSImage::alloc(), initWithISIcon: &*icon?] };
+            image?
         }
     })
 }

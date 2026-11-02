@@ -13,7 +13,7 @@ use std::{
 };
 
 use gpui_kit::{BackgroundExecutor, SharedString};
-use notify::Watcher as _;
+use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
 
 use super::{Category, alias_target, describe, extension, is_package};
 
@@ -296,28 +296,42 @@ impl<'a> Record<'a> {
     }
 }
 
-/// Watches the folders `dirs` (not their subfolders) from now until the changes drop. A change waits `settle` for
-/// the rest of its burst, like a download writing or a big copy landing, so they come together. A
-/// watcher takes milliseconds to start, so it starts and stops in the background.
-pub fn watch(dirs: Vec<PathBuf>, settle: Duration, executor: &BackgroundExecutor) -> Changes {
+/// Watches the folders `dirs` from now until the changes drop, and their subfolders too with
+/// `subfolders`, for whether they're empty. A change waits `settle` for the rest of its burst, like
+/// a download writing or a big copy landing, so they come together. A watcher takes milliseconds to
+/// start, so it starts and stops in the background.
+pub fn watch(dirs: Vec<PathBuf>, subfolders: bool, settle: Duration, executor: &BackgroundExecutor) -> Changes {
     let since = SystemTime::now();
     let (tx, rx) = smol::channel::unbounded();
     executor
         .spawn(async move {
             let started = tx.clone();
+            // FSEvents names what changed by its real path, which is told as it's in the folder
+            // watched.
+            let named: Vec<(PathBuf, PathBuf)> =
+                dirs.iter().map(|dir| (fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()), dir.clone())).collect();
             let _watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if let Ok(event) = event
-                    && !event.kind.is_access()
-                {
-                    tx.send_blocking(event.paths).ok();
+                let Ok(event) = event else { return };
+                if event.kind.is_access() {
+                    return;
+                }
+                let mut changed = Changed::default();
+                for path in &event.paths {
+                    for (watched, named) in &named {
+                        changed.add(path, &event.kind, watched, named);
+                    }
+                }
+                if !changed.paths.is_empty() {
+                    tx.send_blocking(changed).ok();
                 }
             })
             .and_then(|mut watcher| {
                 // All in one go, which starts watching once rather than for each. One gone already
                 // is changed already, which the others' changes tell.
+                let mode = if subfolders { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
                 let mut paths = watcher.paths_mut();
                 for dir in &dirs {
-                    paths.add(dir, notify::RecursiveMode::NonRecursive).ok();
+                    paths.add(dir, mode).ok();
                 }
                 paths.commit()?;
                 Ok(watcher)
@@ -329,7 +343,7 @@ pub fn watch(dirs: Vec<PathBuf>, settle: Duration, executor: &BackgroundExecutor
                     .and_then(|metadata| metadata.modified())
                     .is_ok_and(|modified| modified + Duration::from_secs(2) >= since)
             }) {
-                started.send(Vec::new()).await.ok();
+                started.send(Changed { items: true, paths: Vec::new() }).await.ok();
             }
             // Until the changes drop.
             started.closed().await;
@@ -338,9 +352,38 @@ pub fn watch(dirs: Vec<PathBuf>, settle: Duration, executor: &BackgroundExecutor
     Changes { rx, settle }
 }
 
-/// What changes in a folder `watch`es.
+/// What changed in a folder `watch`es.
+#[derive(Default)]
+pub struct Changed {
+    /// Whether its items did, so it's listed again.
+    pub items: bool,
+    /// What may look different: the items that changed, and the folders items came to or went
+    /// from, as a folder's icon shows whether it's empty. Those are the folder itself and its
+    /// subfolders.
+    pub paths: Vec<PathBuf>,
+}
+
+impl Changed {
+    /// That `kind` happened to `path`, in the folder at `watched`, its real path, named as it's in
+    /// `named`.
+    fn add(&mut self, path: &Path, kind: &EventKind, watched: &Path, named: &Path) {
+        let Ok(relative) = path.strip_prefix(watched) else { return };
+        let depth = relative.components().count();
+        if depth <= 1 {
+            self.items = true;
+            self.paths.push(named.join(relative));
+        }
+        let came_or_went =
+            matches!(kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)));
+        if let Some(folder) = relative.parent().filter(|_| came_or_went && (1..=2).contains(&depth)) {
+            self.paths.push(named.join(folder));
+        }
+    }
+}
+
+/// The changes in a folder `watch`es, as they come.
 pub struct Changes {
-    rx: smol::channel::Receiver<Vec<PathBuf>>,
+    rx: smol::channel::Receiver<Changed>,
     settle: Duration,
 }
 
@@ -351,11 +394,12 @@ impl Changes {
     }
 
     /// What changed next, once its burst has settled.
-    pub async fn next(&self) -> Option<Vec<PathBuf>> {
+    pub async fn next(&self) -> Option<Changed> {
         let mut changed = self.rx.recv().await.ok()?;
         smol::Timer::after(self.settle).await;
         while let Ok(more) = self.rx.try_recv() {
-            changed.extend(more);
+            changed.items |= more.items;
+            changed.paths.extend(more.paths);
         }
         Some(changed)
     }
@@ -369,6 +413,31 @@ mod tests {
     use objc2_foundation::{NSURL, NSURLBookmarkCreationOptions};
 
     use crate::fs::{Scratch, file_url};
+
+    #[test]
+    fn changes_say_whether_items_changed_and_what_may_look_different() {
+        use notify::event::{CreateKind, DataChange, RemoveKind, RenameMode};
+        let (watched, named) = (Path::new("/private/tmp/dir"), Path::new("/tmp/dir"));
+        let change = |path: &str, kind| {
+            let mut changed = Changed::default();
+            changed.add(Path::new(path), &kind, watched, named);
+            (changed.items, changed.paths)
+        };
+        let (created, removed) = (EventKind::Create(CreateKind::File), EventKind::Remove(RemoveKind::File));
+        let renamed = EventKind::Modify(ModifyKind::Name(RenameMode::Any));
+        let written = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+
+        assert_eq!(change("/private/tmp/dir", written), (true, vec![named.to_owned()]));
+        assert_eq!(change("/private/tmp/dir/a.txt", written), (true, vec![named.join("a.txt")]));
+        for kind in [created, removed, renamed] {
+            assert_eq!(change("/private/tmp/dir/a.txt", kind), (true, vec![named.join("a.txt"), named.to_owned()]));
+            assert_eq!(change("/private/tmp/dir/sub/a.txt", kind), (false, vec![named.join("sub")]));
+        }
+        // What's written in a subfolder doesn't change whether it's empty, and nor does anything deeper.
+        assert_eq!(change("/private/tmp/dir/sub/a.txt", written), (false, vec![]));
+        assert_eq!(change("/private/tmp/dir/sub/deeper/a.txt", created), (false, vec![]));
+        assert_eq!(change("/private/tmp/other/a.txt", created), (false, vec![]));
+    }
 
     #[test]
     fn lists_what_stat_sees() {
