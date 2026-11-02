@@ -92,8 +92,10 @@ impl Storage {
             _history: cx.observe_global::<History>(|this, cx| {
                 // An undo or redo can bring back what went to the Trash from here, or take it away
                 // again.
-                let (toggled, changes) = (history::toggled(cx), history::changes(cx));
-                let moved_here = toggled[this.toggles_seen..].iter().any(|&id| changes[id].moved_in(&this.root));
+                let toggled = history::toggled(cx);
+                let moved_here = toggled[this.toggles_seen..]
+                    .iter()
+                    .any(|&id| history::change(id, cx).is_some_and(|change| change.moved_in(&this.root)));
                 this.toggles_seen = toggled.len();
                 if moved_here {
                     this.rescan(cx);

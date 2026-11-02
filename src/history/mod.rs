@@ -1,6 +1,8 @@
 //! Undo and redo for file operations: one history for every window, like Finder's. Undoing never
 //! deletes anything: what an operation made goes to the Trash, and redoing puts it back from there.
 //! Besides the latest change, any change can be taken back on its own, from the Undo History tab.
+//! The latest changes are saved as JSON in Application Support after every one, so quitting doesn't
+//! lose them.
 
 pub mod page;
 
@@ -12,15 +14,19 @@ use std::{
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{WindowExt as _, button::Button, notification::Notification};
 use gpui_kit::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::{self, Cancelled, Undo, shown_path},
-    operations,
+    operations, settings,
     theme::Toasts as _,
 };
 
+/// How many changes are kept, the latest ones.
+const REMEMBERED: usize = 500;
+
 /// A file operation that can be taken back.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum Op {
     Trash,
     PutBack,
@@ -76,6 +82,7 @@ impl Op {
 }
 
 /// A file operation that went through.
+#[derive(Serialize, Deserialize)]
 pub struct Change {
     pub id: usize,
     pub op: Op,
@@ -85,9 +92,11 @@ pub struct Change {
     pub place: String,
     pub time: SystemTime,
     pub undone: bool,
-    /// Takes it back, or once it's undone, does it again. Out while that runs.
-    action: Option<Undo>,
-    /// Every path the last time it was done, undone or redone moved anything from or to.
+    /// Takes it back, or once it's undone, does it again.
+    action: Undo,
+    /// Every path the last time it was done, undone or redone moved anything from or to. Only asked
+    /// about right after an undo or redo, so it isn't saved.
+    #[serde(skip)]
     touched: Vec<PathBuf>,
 }
 
@@ -95,16 +104,12 @@ impl Change {
     fn new(id: usize, op: Op, undo: Undo) -> Self {
         let (detail, place) = describe(op, &undo);
         let touched = footprint(&undo);
-        Self { id, op, detail, place, time: SystemTime::now(), undone: false, action: Some(undo), touched }
-    }
-
-    pub fn running(&self) -> bool {
-        self.action.is_none()
+        Self { id, op, detail, place, time: SystemTime::now(), undone: false, action: undo, touched }
     }
 
     /// Where its items are now.
     pub fn current(&self) -> Vec<PathBuf> {
-        self.action.iter().flat_map(items).map(|(now, _)| now.to_path_buf()).collect()
+        items(&self.action).into_iter().map(|(now, _)| now.to_path_buf()).collect()
     }
 
     /// Whether the last time it was done, undone or redone, it moved anything in `dir`, into it or out
@@ -152,16 +157,21 @@ fn describe(op: Op, undo: &Undo) -> (String, String) {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct History {
-    /// Oldest first, each at its id.
+    /// The id of the oldest change kept. Ids count on from there, and aren't used again once their
+    /// change is let go, so a toast's button can't take back some other change.
+    first: usize,
+    /// Oldest first.
     changes: Vec<Change>,
     /// Changes undone since the last new one, latest last: what Redo does again, in turn.
     redo: Vec<usize>,
-    /// Each change undone or redone, once for every time, in turn.
+    /// Each change undone or redone since launch, once for every time, in turn.
+    #[serde(skip)]
     toggled: Vec<usize>,
-    /// Set while a change is taken back or done again, so that happens one at a time.
-    busy: bool,
+    /// The change being taken back or done again, so that happens one at a time.
+    #[serde(skip)]
+    running: Option<usize>,
 }
 
 impl Global for History {}
@@ -171,18 +181,49 @@ impl History {
     fn latest(&self) -> Option<&Change> {
         self.changes.iter().rev().find(|change| !change.undone)
     }
+
+    fn get(&self, id: usize) -> Option<&Change> {
+        self.changes.get(id.checked_sub(self.first)?)
+    }
+
+    fn get_mut(&mut self, id: usize) -> Option<&mut Change> {
+        self.changes.get_mut(id.checked_sub(self.first)?)
+    }
+
+    /// The id the next change gets.
+    fn next_id(&self) -> usize {
+        self.first + self.changes.len()
+    }
 }
 
 /// The toast for the latest change, which the next one replaces.
 struct Toast;
 
 pub fn init(cx: &mut App) {
-    cx.set_global(History::default());
+    cx.set_global::<History>(settings::load("history.json"));
     page::init(cx);
+}
+
+fn save(cx: &App) {
+    settings::store("history.json", cx.global::<History>());
+}
+
+/// Forgets every change, leaving what they did as it is.
+pub fn clear(cx: &mut App) {
+    let history = cx.global_mut::<History>();
+    history.first = history.next_id();
+    history.changes.clear();
+    history.redo.clear();
+    save(cx);
 }
 
 pub fn changes(cx: &App) -> &[Change] {
     &cx.global::<History>().changes
+}
+
+/// Change `id`, unless it's been let go.
+pub fn change(id: usize, cx: &App) -> Option<&Change> {
+    cx.global::<History>().get(id)
 }
 
 /// Each change undone or redone, by id, once for every time, in turn.
@@ -190,15 +231,16 @@ pub fn toggled(cx: &App) -> &[usize] {
     &cx.global::<History>().toggled
 }
 
-pub fn busy(cx: &App) -> bool {
-    cx.global::<History>().busy
+/// The change being taken back or done again.
+pub fn running(cx: &App) -> Option<usize> {
+    cx.global::<History>().running
 }
 
 /// What Undo and Redo would take back or do again, for the menu.
 pub fn next(cx: &App) -> (Option<&'static str>, Option<&'static str>) {
     let history = cx.global::<History>();
     let undo = history.latest().map(|change| change.op.name());
-    let redo = history.redo.last().map(|&id| history.changes[id].op.name());
+    let redo = history.redo.last().and_then(|&id| history.get(id)).map(|change| change.op.name());
     (undo, redo)
 }
 
@@ -214,9 +256,14 @@ pub fn record(op: Op, undo: Option<Undo>, window: &mut Window, cx: &mut App) {
         _ => None,
     };
     let history = cx.global_mut::<History>();
-    let id = history.changes.len();
+    let id = history.next_id();
     history.changes.push(Change::new(id, op, undo));
     history.redo.clear();
+    if history.changes.len() > REMEMBERED {
+        history.changes.remove(0);
+        history.first += 1;
+    }
+    save(cx);
     match message {
         Some(message) => toast(message, false, id, window, cx),
         None => window.remove_notification::<Toast>(cx),
@@ -238,54 +285,42 @@ pub fn step(redo: bool, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>>
 /// Resolves to the items it moved back, to select.
 pub fn toggle(id: usize, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>> {
     let history = cx.global_mut::<History>();
-    let count = history.changes.len();
-    if history.busy {
+    let next = history.next_id();
+    if history.running.is_some() {
         return Task::ready(Vec::new());
     }
-    let Some(action) = history.changes.get_mut(id).and_then(|change| change.action.take()) else {
-        return Task::ready(Vec::new());
-    };
-    let change = &history.changes[id];
-    let (op, redo) = (change.op, change.undone);
-    history.busy = true;
+    let Some(change) = history.get(id) else { return Task::ready(Vec::new()) };
+    let (op, redo, action) = (change.op, change.undone, change.action.clone());
+    history.running = Some(id);
     let verb = if redo { "Redoing" } else { "Undoing" };
-    let task = operations::track(
-        verb,
-        move |progress| {
-            let done = action.apply(progress);
-            (action, done)
-        },
-        cx,
-    );
+    let task = operations::track(verb, move |progress| action.apply(progress), cx);
     let window = window.window_handle();
     cx.spawn(async move |cx| {
-        let (action, mut done) = task.await;
+        let mut done = task.await;
         let toggled = cx.update(|cx| {
             let history = cx.global_mut::<History>();
-            history.busy = false;
-            let change = &mut history.changes[id];
-            let toggled = match done.undo.take() {
-                Some(back) => {
-                    change.touched = [footprint(&action), footprint(&back)].concat();
-                    change.action = Some(back);
+            history.running = None;
+            // Unless nothing went through, so it's as it was and can be tried again, or it was
+            // cleared while it ran, or let go of as the oldest.
+            let toggled = match (history.get_mut(id), done.undo.take()) {
+                (Some(change), Some(back)) => {
+                    change.touched = [footprint(&change.action), footprint(&back)].concat();
+                    change.action = back;
                     change.undone = !redo;
                     true
                 }
-                // Nothing went through, so it's as it was and can be tried again.
-                None => {
-                    change.action = Some(action);
-                    false
-                }
+                _ => false,
             };
             if toggled {
                 history.toggled.push(id);
             }
             if toggled && redo {
                 history.redo.retain(|&undone| undone != id);
-            } else if toggled && history.changes.len() == count {
+            } else if toggled && history.next_id() == next {
                 // A change made in the meantime would have left nothing to redo, this included.
                 history.redo.push(id);
             }
+            save(cx);
             toggled
         });
         window
@@ -307,7 +342,7 @@ pub fn toggle(id: usize, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>
 fn toast(message: String, redo: bool, id: usize, window: &mut Window, cx: &mut App) {
     let note = Notification::new().message(message).id::<Toast>().action(move |_, _, _| {
         Button::new("take-back").label(if redo { "Redo" } else { "Undo" }).on_click(move |_, window, cx| {
-            if cx.global::<History>().changes[id].undone == redo {
+            if change(id, cx).is_some_and(|change| change.undone == redo) {
                 toggle(id, window, cx).detach();
             }
         })

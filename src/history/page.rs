@@ -1,5 +1,5 @@
-//! The Undo History tab (⌥⌘Z): every file operation since Mu opened, newest first, each of which
-//! can be undone or redone on its own.
+//! The Undo History tab (⌥⌘Z): the latest file operations, newest first, each of which can be undone
+//! or redone on its own.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -33,7 +33,13 @@ impl HistoryPage {
         Self { focus_handle: cx.focus_handle(), _observe: cx.observe_global::<History>(|_, cx| cx.notify()) }
     }
 
-    fn render_change(&self, change: &Change, first: bool, busy: bool, cx: &Context<Self>) -> impl IntoElement + use<> {
+    fn render_change(
+        &self,
+        change: &Change,
+        first: bool,
+        running: Option<usize>,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let id = change.id;
         let current = change.current();
@@ -101,8 +107,8 @@ impl HistoryPage {
                             .small()
                             .w(px(64.))
                             .label(if change.undone { "Redo" } else { "Undo" })
-                            .loading(change.running())
-                            .disabled(busy)
+                            .loading(running == Some(id))
+                            .disabled(running.is_some())
                             .on_click(move |_, window, cx| history::toggle(id, window, cx).detach()),
                     ),
             )
@@ -117,12 +123,12 @@ impl Focusable for HistoryPage {
 
 impl Render for HistoryPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let busy = history::busy(cx);
+        let running = history::running(cx);
         let rows: Vec<_> = history::changes(cx)
             .iter()
             .rev()
             .enumerate()
-            .map(|(ix, change)| self.render_change(change, ix == 0, busy, cx))
+            .map(|(ix, change)| self.render_change(change, ix == 0, running, cx))
             .collect();
         let theme = cx.theme();
         div()
@@ -144,7 +150,16 @@ impl Render for HistoryPage {
                         h_flex()
                             .gap_3()
                             .child(Icon::new(IconName::RotateCcwClock).size(px(22.)).text_color(theme.muted_foreground))
-                            .child(div().text_xl().font_semibold().child("Undo History")),
+                            .child(div().text_xl().font_semibold().child("Undo History"))
+                            .child(
+                                Button::new("clear")
+                                    .ghost()
+                                    .small()
+                                    .ml_auto()
+                                    .label("Clear")
+                                    .disabled(rows.is_empty())
+                                    .on_click(|_, _, cx| history::clear(cx)),
+                            ),
                     )
                     .map(|page| {
                         if rows.is_empty() {
