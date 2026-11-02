@@ -6,11 +6,14 @@ use std::{io, path::PathBuf};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use mu_terminal::ShowInFiles;
+use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
+use objc2_app_kit::{NSAboutPanelOptionVersion, NSApplication};
+use objc2_foundation::{NSDictionary, NSString};
 
 use super::{
     Item, Workspace,
     sidebar::empty_trash,
-    windows::{open_window, quit},
+    windows::{open_asked, open_window, quit},
 };
 use crate::{
     browser::{
@@ -68,6 +71,11 @@ gpui_kit::actions!(
         NewWindow,
         CloseWindow,
         Minimize,
+        BringAllToFront,
+        About,
+        Hide,
+        HideOthers,
+        ShowAll,
         Quit,
     ]
 );
@@ -144,6 +152,8 @@ pub(super) fn init(cx: &mut App) {
         KeyBinding::new("up", PreviousSuggestion, Some("PathEditor > Input")),
         KeyBinding::new("escape", ClearFilter, Some("Filter")),
         KeyBinding::new("cmd-n", NewWindow, None),
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-q", Quit, None),
     ]);
     cx.bind_keys(go_to().map(|(_, key, path)| KeyBinding::new(key, GoTo(path), ws)));
@@ -158,6 +168,26 @@ pub(super) fn init(cx: &mut App) {
             .map(|(ix, key)| KeyBinding::new(key, ShowPlace(ix), Some("FileList && !renaming"))),
     );
     cx.on_action(|_: &Quit, cx| quit(cx, || {}));
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    cx.on_action(|_: &About, _| show_about());
+    cx.on_action(|_: &BringAllToFront, _| ns_app().arrangeInFront(None));
+    // For the Dock's menu, and the menu bar when no window is in front to do them there.
+    cx.on_action(|_: &NewWindow, cx| {
+        open_window(home_dir(), cx);
+        cx.activate(true);
+    });
+    cx.on_action(|_: &NewTerminal, cx| open_asked(vec![Tab::Terminal(home_dir())], cx));
+    cx.on_action(|_: &ShowActivity, cx| open_asked(vec![Tab::Activity], cx));
+    cx.on_action(|_: &ShowThisMac, cx| open_asked(vec![Tab::ThisMac], cx));
+    cx.set_dock_menu(vec![
+        MenuItem::action("New Window", NewWindow),
+        MenuItem::action("New Terminal", NewTerminal),
+        MenuItem::separator(),
+        MenuItem::action("Activity", ShowActivity),
+        MenuItem::action("This Mac", ShowThisMac),
+    ]);
     cx.on_action(|_: &ToggleHidden, cx| Settings::update(cx, |s| s.show_hidden = !s.show_hidden));
     cx.on_action(|_: &ViewAsGrid, cx| Settings::update(cx, |s| s.grid = true));
     cx.on_action(|_: &ViewAsList, cx| Settings::update(cx, |s| s.grid = false));
@@ -171,9 +201,17 @@ pub fn menus(cx: &App) -> Vec<Menu> {
     let (undo, redo) = history::next(cx);
     vec![
         Menu::new("Mu").items([
+            MenuItem::action("About Mu", About),
+            MenuItem::separator(),
             MenuItem::action("Settings…", ShowSettings),
             MenuItem::action("Check for Updates", update::CheckForUpdates),
             MenuItem::action("Import from Finder", ImportFromFinder),
+            MenuItem::separator(),
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Hide Mu", Hide),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
             MenuItem::separator(),
             MenuItem::action("Quit Mu", Quit),
         ]),
@@ -253,8 +291,22 @@ pub fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Next Tab", NextTab),
             MenuItem::action("Previous Tab", PrevTab),
+            MenuItem::separator(),
+            MenuItem::action("Bring All to Front", BringAllToFront),
         ]),
     ]
+}
+
+fn ns_app() -> Retained<NSApplication> {
+    NSApplication::sharedApplication(MainThreadMarker::new().expect("menus run on the main thread"))
+}
+
+/// The About panel, without the build number, which is the version again.
+fn show_about() {
+    let none = NSString::from_str("");
+    let none: &AnyObject = &none;
+    let options = NSDictionary::from_slices(&[unsafe { NSAboutPanelOptionVersion }], &[none]);
+    unsafe { ns_app().orderFrontStandardAboutPanelWithOptions(&options) };
 }
 
 impl Workspace {
