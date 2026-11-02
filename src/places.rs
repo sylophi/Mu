@@ -7,6 +7,7 @@ use gpui_kit::*;
 
 use crate::{
     fs::{self, Volume},
+    icons,
     permissions::Permissions,
 };
 
@@ -35,16 +36,21 @@ fn watch_trash(cx: &mut App) {
         places.trash = trash_count();
         places._trash_watch = watch;
     });
+    // Its icon shows whether it's empty, which can't be told before Full Disk Access.
+    icons::refresh(&[fs::trash_dir()], cx);
 }
 
-/// Once `dir` settles after a change, reads it again with `read` in the background and hands that to
-/// `apply`, until the task is dropped.
+/// Once `dir` settles after a change to its items, reads it again with `read` in the background and
+/// hands that to `apply`, until the task is dropped.
 fn watch<T: Send + 'static>(dir: &Path, read: fn() -> T, apply: fn(&mut Places, T), cx: &mut App) -> Task<()> {
-    let changes = fs::watch(vec![dir.to_path_buf()], Duration::from_millis(300), cx.background_executor());
+    let changes = fs::watch(vec![dir.to_path_buf()], false, Duration::from_millis(300), cx.background_executor());
     cx.spawn(async move |cx| {
-        while changes.next().await.is_some() {
-            let value = cx.background_spawn(async move { read() }).await;
-            cx.update_global::<Places, _>(|places, _| apply(places, value));
+        while let Some(changed) = changes.next().await {
+            cx.update(|cx| icons::refresh(&changed.paths, cx));
+            if changed.items {
+                let value = cx.background_spawn(async move { read() }).await;
+                cx.update_global::<Places, _>(|places, _| apply(places, value));
+            }
         }
     })
 }

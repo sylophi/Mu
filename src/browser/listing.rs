@@ -327,9 +327,11 @@ impl Browser {
         cx.spawn_in(window, async move |this, cx| {
             while let Some(changed) = changes.next().await {
                 let update = this.update_in(cx, |this, window, cx| {
-                    this.load(window, cx);
+                    if changed.items {
+                        this.load(window, cx);
+                    }
                     // Like a folder given a new icon in Finder, or an app updated.
-                    icons::refresh(&changed, cx);
+                    icons::refresh(&changed.paths, cx);
                 });
                 if update.is_err() {
                     break;
@@ -465,7 +467,7 @@ impl Browser {
 
 /// Watches the folders at `paths`, a change at a time once its burst settles.
 pub(super) fn watcher(paths: Vec<PathBuf>, cx: &App) -> Changes {
-    fs::watch(paths, Duration::from_millis(120), cx.background_executor())
+    fs::watch(paths, true, Duration::from_millis(120), cx.background_executor())
 }
 
 /// A folder's `entries`, sorted, with the items of the folders in them under them: a level at a
