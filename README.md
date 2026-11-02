@@ -33,7 +33,7 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 - Terminals as tabs, which open where you are
 - An editor that opens text files in place of TextEdit, and find in folder
 - Activity, for CPU, GPU, memory, network, disks and processes
-- This Mac, for what it's made of, what's connected, its updates, what starts at login and what takes up the room
+- This Mac, for what it's made of, what's connected, what starts at login and what takes up the room
 - An uninstaller that finds what an app left around the Mac and moves it to the Trash with the app
 - Disks you can eject, and file servers on the network
 

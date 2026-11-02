@@ -1,14 +1,10 @@
 //! This Mac's overview, like About This Mac: what the Mac is, what it runs, how long it's been up,
-//! what's connected to it, and the software updates waiting for it.
+//! and what's connected to it.
 
 use std::ffi::CStr;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, StyledExt as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_kit::component::{ActiveTheme as _, Icon, StyledExt as _, h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::{
@@ -24,7 +20,6 @@ use crate::{
 use super::{
     devices::{self, Device, Kind},
     group, list, loading, note,
-    updates::{self, Update},
 };
 
 pub struct Overview {
@@ -35,7 +30,6 @@ pub struct Overview {
     battery: Option<Battery>,
     /// Till they've been looked for.
     devices: Option<Vec<Device>>,
-    updates: Option<anyhow::Result<Vec<Update>>>,
     monitor: Entity<Monitor>,
     focus_handle: FocusHandle,
     /// For how long it's been up.
@@ -67,7 +61,6 @@ impl Overview {
             facts,
             battery: None,
             devices: None,
-            updates: None,
             focus_handle: cx.focus_handle(),
             _monitor: cx.observe(&monitor, |_, _, cx| cx.notify()),
             monitor,
@@ -77,23 +70,15 @@ impl Overview {
         this
     }
 
-    /// Reads what changes: the battery, what's connected and the updates, which come last as they
-    /// take the longest.
+    /// Reads what changes: the battery and what's connected.
     fn load(&mut self, cx: &mut Context<Self>) {
-        (self.devices, self.updates) = (None, None);
+        self.devices = None;
         let devices = cx.background_spawn(async { (monitor::battery(), devices::connected()) });
-        let updates = cx.background_spawn(async { updates::pending() });
         self._load = cx.spawn(async move |this, cx| {
             let (battery, devices) = devices.await;
             this.update(cx, |this, cx| {
                 this.battery = battery;
                 this.devices = Some(devices);
-                cx.notify();
-            })
-            .ok();
-            let updates = updates.await;
-            this.update(cx, |this, cx| {
-                this.updates = Some(updates);
                 cx.notify();
             })
             .ok();
@@ -132,31 +117,6 @@ impl Overview {
             ),
         };
         group("Devices", None, list, cx)
-    }
-
-    fn render_updates(&self, cx: &App) -> impl IntoElement + use<> {
-        let theme = cx.theme();
-        let list = match &self.updates {
-            None => loading(),
-            Some(Err(_)) => note("Couldn't check for updates", cx),
-            Some(Ok(updates)) if updates.is_empty() => note("Up to date", cx),
-            Some(Ok(updates)) => list(
-                updates.iter().map(|update| {
-                    h_flex().gap_3().child(div().flex_1().min_w_0().truncate().child(update.title.clone())).children(
-                        update.size.map(|size| {
-                            div().flex_none().text_color(theme.muted_foreground).child(fs::format_size(size))
-                        }),
-                    )
-                }),
-                cx,
-            ),
-        };
-        let open = Button::new("software-update")
-            .ghost()
-            .small()
-            .label("Software Update")
-            .on_click(|_, _, cx| cx.open_url(updates::SETTINGS));
-        group("Software Updates", Some(open), list, cx)
     }
 }
 
@@ -206,8 +166,7 @@ impl Render for Overview {
                     )
                     .child(theme::card(theme).child(facts(mac, cx)))
                     .children(self.battery.map(|battery| self.render_battery(battery, cx)))
-                    .child(self.render_devices(cx))
-                    .child(self.render_updates(cx)),
+                    .child(self.render_devices(cx)),
             )
     }
 }
