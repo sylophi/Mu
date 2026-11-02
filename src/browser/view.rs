@@ -35,6 +35,8 @@ const TILE_PADDING: Pixels = px(4.);
 /// The cloud mark after a name, and the gap before it.
 const CLOUD_MARK: Pixels = px(14.);
 pub(super) const ROW_ICON: Pixels = px(16.);
+/// How far a row in an expanded folder is in from the folder's.
+const INDENT: Pixels = px(20.);
 pub(super) const HEADER_HEIGHT: Pixels = px(24.);
 /// The least a list column can be dragged down to.
 const MIN_COLUMN_WIDTH: Pixels = px(40.);
@@ -124,6 +126,16 @@ impl Browser {
         match grid {
             true => self.grid_columns() * (height / CELL_HEIGHT).ceil() as usize,
             false => (height / ROW_HEIGHT).ceil() as usize,
+        }
+    }
+
+    /// How many rows fit in the list, which folders in it expand to fill, when the setting has them.
+    /// None do in the grid.
+    pub(super) fn room(&self, cx: &App) -> usize {
+        let settings = Settings::get(cx);
+        match settings.smart_expansion && !settings.grid {
+            true => ((self.height - HEADER_HEIGHT) / ROW_HEIGHT).floor().max(0.) as usize,
+            false => 0,
         }
     }
 
@@ -433,13 +445,13 @@ impl Browser {
     }
 
     fn render_row(&self, ix: usize, batch: &Batch, cx: &Context<Self>) -> Stateful<Div> {
-        let entry = &self.listing[ix];
+        let (entry, key) = (&self.listing[ix], self.listing.key(ix));
         let icon = icons::entry(entry, ROW_ICON);
         let dimmed = batch.dimmed(entry);
         let muted = cx.theme().muted_foreground;
         let [name_width, modified_width, size_width, kind_width] = batch.widths;
         let cell = |width: Pixels| div().w(width).flex_none().px_2().truncate().text_color(muted);
-        let rename = self.rename.as_ref().filter(|rename| rename.name == entry.name);
+        let rename = self.rename.as_ref().filter(|rename| &rename.key == key);
         let name = h_flex().min_w_0().gap_1().when(dimmed, |el| el.opacity(0.6)).map(|el| match rename {
             Some(rename) => el.flex_1().child(self.render_rename(rename, cx).flex_1()),
             // Cut in the middle, so a long name keeps its end, like "…0012.jpeg".
@@ -447,12 +459,12 @@ impl Browser {
                 .child(div().min_w_0().truncate().text_ellipsis_middle().child(one_line(&entry.name)))
                 .children(cloud_mark(entry, cx)),
         });
-        self.item(h_flex().id(ElementId::Name(entry.name.clone())), ix, batch, cx)
+        self.item(h_flex().id(ElementId::Name(key.clone())), ix, batch, cx)
             .h(ROW_HEIGHT)
             .w(batch.row_width)
             .text_sm()
             .child(
-                h_flex().w(name_width).flex_none().px_2().child(
+                h_flex().w(name_width).flex_none().px_2().pl(px(8.) + INDENT * self.listing.depth(ix) as f32).child(
                     self.grip(h_flex().id("grip").min_w_0().gap_2(), ix, batch, cx)
                         .when(rename.is_some(), |el| el.flex_1())
                         .child(div().flex_none().when(dimmed, |el| el.opacity(0.5)).child(icon))
@@ -501,7 +513,7 @@ impl Browser {
             // What it has no picture of, or not yet, shows its icon.
             None => icons::entry(entry, icon).into_any_element(),
         };
-        let tile = self.item(v_flex().id(ElementId::Name(entry.name.clone())), ix, batch, cx);
+        let tile = self.item(v_flex().id(ElementId::Name(self.listing.key(ix).clone())), ix, batch, cx);
         self.grip(tile, ix, batch, cx)
             .w(width)
             .p(TILE_PADDING)
@@ -511,7 +523,7 @@ impl Browser {
             .text_xs()
             .child(div().when(dimmed, |el| el.opacity(0.5)).child(picture))
             .child(div().w_full().when(dimmed, |el| el.opacity(0.6)).map(|el| {
-                match self.rename.as_ref().filter(|rename| rename.name == entry.name) {
+                match self.rename.as_ref().filter(|rename| &rename.key == self.listing.key(ix)) {
                     Some(rename) => el.child(self.render_rename(rename, cx)),
                     None => el
                         .flex()
@@ -540,9 +552,9 @@ impl Browser {
     /// What rows and tiles share: the selection's colors, middle clicks, and drops.
     fn item(&self, el: Stateful<Div>, ix: usize, batch: &Batch, cx: &Context<Self>) -> Stateful<Div> {
         let theme = cx.theme();
-        let entry = &self.listing[ix];
-        let selected = self.selection.contains(&entry.name);
-        let is_cursor = self.selection.cursor.as_ref() == Some(&entry.name);
+        let (entry, key) = (&self.listing[ix], self.listing.key(ix));
+        let selected = self.selection.contains(key);
+        let is_cursor = self.selection.cursor.as_ref() == Some(key);
         let (path, into) = (entry.path.clone(), entry.target().to_path_buf());
         el.border_1()
             .border_color(transparent_black())
@@ -572,10 +584,9 @@ impl Browser {
     /// The part of item `ix` that picks it up: a tile, or a row's icon and name. A click there
     /// selects the item and a drag takes the files. Anywhere else, a drag selects.
     fn grip(&self, el: Stateful<Div>, ix: usize, batch: &Batch, cx: &Context<Self>) -> Stateful<Div> {
-        let entry = &self.listing[ix];
-        let paths = match self.selection.contains(&entry.name) {
+        let paths = match self.selection.contains(self.listing.key(ix)) {
             true => batch.selected_paths.get_or_init(|| Rc::new(self.selected_paths())).clone(),
-            false => Rc::new(vec![entry.path.clone()]),
+            false => Rc::new(vec![self.listing[ix].path.clone()]),
         };
         el.on_mouse_down(
             MouseButton::Left,

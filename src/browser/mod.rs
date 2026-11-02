@@ -9,6 +9,7 @@ mod selection;
 mod view;
 
 use std::{
+    ops::Range,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -162,6 +163,11 @@ pub struct Browser {
     columns_scroll: ScrollHandle,
     /// The listing's width as of the last frame, which the grid's columns and the list's rows follow.
     width: Pixels,
+    /// Its height as of the last frame, which the list fills by expanding the folders in it.
+    height: Pixels,
+    /// The rooms, in rows, the listing would be the same in, so it's only expanded again once its
+    /// room leaves them.
+    fits: Range<usize>,
     /// Quick Look's pictures for the grid's tiles.
     tiles: Cache,
     /// How Finder lays out this folder, when it gives it a picture, as with a disk image.
@@ -170,6 +176,8 @@ pub struct Browser {
     spots: Vec<Point<Pixels>>,
     _load: Task<()>,
     _watch: Task<()>,
+    /// Watches the folders expanded in the listing along with it.
+    _watch_expanded: Task<()>,
     _settings: Subscription,
     _in_window: [Subscription; 2],
 }
@@ -205,11 +213,14 @@ impl Browser {
             scroll: UniformListScrollHandle::new(),
             columns_scroll: ScrollHandle::new(),
             width: px(0.),
+            height: px(0.),
+            fits: 0..usize::MAX,
             tiles: Cache::framed(TILE_ICON),
             layout: None,
             spots: Vec::new(),
             _load: Task::ready(()),
             _watch: Task::ready(()),
+            _watch_expanded: Task::ready(()),
             _settings: cx.observe_global::<Settings>(|this, cx| this.update_visible(cx)),
             _in_window: Self::observe_in_window(window, cx),
         };
@@ -247,7 +258,7 @@ impl Browser {
 
     /// (items shown, items selected, bytes in the selected files)
     pub fn status(&self) -> (usize, usize, u64) {
-        let selected = self.selection.names.iter().filter_map(|name| self.listing.position(name));
+        let selected = self.selection.keys.iter().filter_map(|key| self.listing.position(key));
         let size = selected.map(|ix| self.listing[ix].size).sum();
         (self.listing.len(), self.selection.len(), size)
     }
@@ -341,7 +352,8 @@ impl Browser {
     /// Follows its tab into another window, which it keeps up with and loads into from then on.
     pub fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self._in_window = Self::observe_in_window(window, cx);
-        self.watch(listing::watcher(&self.path, cx), window, cx);
+        self.watch(listing::watcher(vec![self.path.clone()], cx), window, cx);
+        self.watch_expanded(window, cx);
         self.load(window, cx);
     }
 }
@@ -443,11 +455,17 @@ impl Render for Browser {
             .child({
                 let entity = entity.clone();
                 canvas(
-                    move |bounds, _, cx| {
+                    move |bounds, window, cx| {
                         entity.update(cx, |this, cx| {
                             if this.width != bounds.size.width {
                                 this.width = bounds.size.width;
                                 cx.notify();
+                            }
+                            this.height = bounds.size.height;
+                            // With more room, or less, as many folders expand as fit in it, a listing
+                            // at a time, which a resize can outpace.
+                            if !this.loading && !this.fits.contains(&this.room(cx)) {
+                                this.load(window, cx);
                             }
                         })
                     },

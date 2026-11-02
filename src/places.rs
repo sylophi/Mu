@@ -40,7 +40,7 @@ fn watch_trash(cx: &mut App) {
 /// Once `dir` settles after a change, reads it again with `read` in the background and hands that to
 /// `apply`, until the task is dropped.
 fn watch<T: Send + 'static>(dir: &Path, read: fn() -> T, apply: fn(&mut Places, T), cx: &mut App) -> Task<()> {
-    let changes = fs::watch(dir, Duration::from_millis(300), cx.background_executor());
+    let changes = fs::watch(vec![dir.to_path_buf()], Duration::from_millis(300), cx.background_executor());
     cx.spawn(async move |cx| {
         while changes.next().await.is_some() {
             let value = cx.background_spawn(async move { read() }).await;

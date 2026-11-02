@@ -30,6 +30,8 @@ pub struct Entry {
     pub package: bool,
     /// A symlink or a Finder alias, which shows what it leads to.
     pub is_link: bool,
+    /// Another disk mounted here, or a firmlink, which shows what's there.
+    pub mounted: bool,
     /// It wears an icon of its own, pasted on in Finder.
     pub custom_icon: bool,
     /// Locked in Finder, so it can't be changed, renamed or trashed.
@@ -234,7 +236,8 @@ fn entry(dir: &Path, bytes: &[u8]) -> Option<Entry> {
     let (mut is_dir, mut executable) = (object == VDIR, object == VREG && mode & 0o111 != 0);
     // A link shows what it points to, and a firmlink or mount point what's there, not the folder
     // it covers.
-    let elsewhere = is_link || flags & SF_FIRMLINK != 0 || mount & libc::DIR_MNTSTATUS_MNTPOINT != 0;
+    let mounted = flags & SF_FIRMLINK != 0 || mount & libc::DIR_MNTSTATUS_MNTPOINT != 0;
+    let elsewhere = is_link || mounted;
     if elsewhere && let Ok(target) = fs::metadata(target) {
         let target_executable = target.is_file() && target.permissions().mode() & 0o111 != 0;
         (is_dir, executable, size, modified) =
@@ -253,6 +256,7 @@ fn entry(dir: &Path, bytes: &[u8]) -> Option<Entry> {
         folder,
         package,
         is_link,
+        mounted,
         // A custom icon (kHasCustomIcon). A link shows the icon of what it leads to instead.
         custom_icon: !is_link && finder_info[8] & 0x04 != 0,
         locked: flags & libc::UF_IMMUTABLE != 0,
@@ -292,13 +296,12 @@ impl<'a> Record<'a> {
     }
 }
 
-/// Watches `dir` (not its subfolders) from now until the changes drop. A change waits `settle` for
+/// Watches the folders `dirs` (not their subfolders) from now until the changes drop. A change waits `settle` for
 /// the rest of its burst, like a download writing or a big copy landing, so they come together. A
 /// watcher takes milliseconds to start, so it starts and stops in the background.
-pub fn watch(dir: &Path, settle: Duration, executor: &BackgroundExecutor) -> Changes {
+pub fn watch(dirs: Vec<PathBuf>, settle: Duration, executor: &BackgroundExecutor) -> Changes {
     let since = SystemTime::now();
     let (tx, rx) = smol::channel::unbounded();
-    let dir = dir.to_owned();
     executor
         .spawn(async move {
             let started = tx.clone();
@@ -310,15 +313,22 @@ pub fn watch(dir: &Path, settle: Duration, executor: &BackgroundExecutor) -> Cha
                 }
             })
             .and_then(|mut watcher| {
-                watcher.watch(&dir, notify::RecursiveMode::NonRecursive)?;
+                // All in one go, which starts watching once rather than for each. One gone already
+                // is changed already, which the others' changes tell.
+                let mut paths = watcher.paths_mut();
+                for dir in &dirs {
+                    paths.add(dir, notify::RecursiveMode::NonRecursive).ok();
+                }
+                paths.commit()?;
                 Ok(watcher)
             });
             // Items added, removed or renamed while the watcher started went unseen, so they count as
             // a change. Some file systems keep times to the second, or to two.
-            if fs::metadata(&dir)
-                .and_then(|metadata| metadata.modified())
-                .is_ok_and(|modified| modified + Duration::from_secs(2) >= since)
-            {
+            if dirs.iter().any(|dir| {
+                fs::metadata(dir)
+                    .and_then(|metadata| metadata.modified())
+                    .is_ok_and(|modified| modified + Duration::from_secs(2) >= since)
+            }) {
                 started.send(Vec::new()).await.ok();
             }
             // Until the changes drop.

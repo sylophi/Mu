@@ -4,8 +4,9 @@ use std::{
     cmp::Ordering,
     collections::HashMap,
     io,
-    ops::Index,
-    path::{Path, PathBuf},
+    ops::{Index, Range},
+    os::unix::ffi::OsStrExt as _,
+    path::PathBuf,
     time::Duration,
 };
 
@@ -60,8 +61,9 @@ pub(super) struct AfterLoad {
     pub(super) rename: bool,
 }
 
-/// A folder's items, sorted, and how Finder lays it out, if it does.
-type Listed = (io::Result<Vec<Entry>>, Option<Layout>);
+/// A folder's items, sorted, with those of the folders expanded in it and the rooms in which they'd
+/// be the same, and how Finder lays it out, if it does.
+type Listed = (io::Result<(Vec<Item>, Range<usize>)>, Option<Layout>);
 
 /// A folder got ready to open, so that it opens with its items, their icons and their pictures
 /// there: the folder under the cursor, or one from a press that may be the start of what opens it,
@@ -76,14 +78,26 @@ pub(super) struct Prefetch {
     _draw: Task<()>,
 }
 
+/// An item in the listing: one of the folder's, or one in a folder expanded under it.
+pub(super) struct Item {
+    pub(super) entry: Entry,
+    /// Its path from the folder, which tells it apart from items of the same name in other folders.
+    pub(super) key: SharedString,
+    /// How many expanded folders it's in.
+    pub(super) depth: usize,
+    /// A folder whose items show under it.
+    expanded: bool,
+}
+
 /// What's in the folder, in order, and which of it shows.
 #[derive(Default)]
 pub(super) struct Listing {
-    entries: Vec<Entry>,
-    /// Indices into `entries`, without hidden files and filtered by name.
+    /// Each expanded folder's items follow it.
+    items: Vec<Item>,
+    /// Indices into `items`, without hidden files and filtered by name.
     visible: Vec<usize>,
-    /// Where each item is in `entries`, by name.
-    by_name: HashMap<SharedString, usize>,
+    /// Where each item is in `items`, by key.
+    by_key: HashMap<SharedString, usize>,
     pub(super) sort: SortKey,
     pub(super) descending: bool,
 }
@@ -99,21 +113,35 @@ impl Listing {
     }
 
     /// The items that show, in order.
-    pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = &Entry> {
-        self.visible.iter().map(|&ix| &self.entries[ix])
+    pub(super) fn iter(&self) -> impl DoubleEndedIterator<Item = &Item> {
+        self.visible.iter().map(|&ix| &self.items[ix])
     }
 
-    /// Where the item named `name` shows, if it does.
-    pub(super) fn position(&self, name: &str) -> Option<usize> {
-        // `visible` keeps to the order of `entries`.
-        self.visible.binary_search(self.by_name.get(name)?).ok()
+    /// The key of the `ix`th item that shows.
+    pub(super) fn key(&self, ix: usize) -> &SharedString {
+        &self.items[self.visible[ix]].key
+    }
+
+    /// How many expanded folders the `ix`th item that shows is in.
+    pub(super) fn depth(&self, ix: usize) -> usize {
+        self.items[self.visible[ix]].depth
+    }
+
+    /// Where the item with `key` shows, if it does.
+    pub(super) fn position(&self, key: &str) -> Option<usize> {
+        // `visible` keeps to the order of `items`.
+        self.visible.binary_search(self.by_key.get(key)?).ok()
+    }
+
+    /// The folders expanded in the listing.
+    fn expanded(&self) -> Vec<PathBuf> {
+        self.items.iter().filter(|item| item.expanded).map(|item| item.entry.path.clone()).collect()
     }
 
     /// Puts the items in the order they show in.
     fn sort(&mut self) {
-        let (sort, descending) = (self.sort, self.descending);
-        self.entries.sort_by(|a, b| compare(a, b, sort, descending));
-        self.by_name = self.entries.iter().enumerate().map(|(ix, entry)| (entry.name.clone(), ix)).collect();
+        self.items = sort_tree(std::mem::take(&mut self.items), self.sort, self.descending);
+        self.by_key = self.items.iter().enumerate().map(|(ix, item)| (item.key.clone(), ix)).collect();
     }
 }
 
@@ -122,7 +150,7 @@ impl Index<usize> for Listing {
     type Output = Entry;
 
     fn index(&self, ix: usize) -> &Entry {
-        &self.entries[self.visible[ix]]
+        &self.items[self.visible[ix]].entry
     }
 }
 
@@ -166,16 +194,20 @@ impl Browser {
         });
     }
 
-    /// Lists `path` in the background, sorted as this listing is.
+    /// Lists `path` in the background, sorted as this listing is, with the folders in it that fit
+    /// in the list's room expanded.
     fn list(&self, path: PathBuf, window: &Window, cx: &App) -> Task<Listed> {
         let (sort, descending, scale) = (self.listing.sort, self.listing.descending, window.scale_factor());
+        let (room, show_hidden) = (self.room(cx), Settings::get(cx).show_hidden);
         cx.background_spawn(async move {
+            let layout = Layout::read(&path, scale);
             // Sorted here, so sorting it again on the main thread only checks the order.
-            let listing = fs::list_dir(&path).map(|mut entries| {
-                entries.sort_by(|a, b| compare(a, b, sort, descending));
-                entries
+            let listing = fs::list_dir(&path).map(|entries| match layout {
+                // A folder Finder lays out shows as Finder has it, whatever the room.
+                Some(_) => (expand(entries, 0, show_hidden, sort, descending).0, 0..usize::MAX),
+                None => expand(entries, room, show_hidden, sort, descending),
             });
-            (listing, Layout::read(&path, scale))
+            (listing, layout)
         })
     }
 
@@ -208,7 +240,7 @@ impl Browser {
         if path == self.path {
             return;
         }
-        let changes = watcher(&path, cx);
+        let changes = watcher(vec![path.clone()], cx);
         let settings = Settings::get(cx);
         let (show_hidden, first) = (settings.show_hidden, self.screenful(settings.grid));
         let (sender, receiver) = smol::channel::bounded(1);
@@ -216,8 +248,8 @@ impl Browser {
         let listing = cx.background_spawn(async move {
             let listed = listing.await;
             // What it shows first, unless Finder lays it out.
-            if let (Ok(entries), None) = &listed {
-                let shown = entries.iter().filter(|entry| show_hidden || !entry.hidden);
+            if let (Ok((items, _)), None) = &listed {
+                let shown = items.iter().map(|item| &item.entry).filter(|entry| show_hidden || !entry.hidden);
                 sender.try_send(shown.take(first).cloned().collect::<Vec<_>>()).ok();
             }
             listed
@@ -270,7 +302,7 @@ impl Browser {
                 (prefetch.changes, self.list(self.path.clone(), window, cx))
             }
             Some(prefetch) => (prefetch.changes, prefetch.listing),
-            None => (watcher(&self.path, cx), self.list(self.path.clone(), window, cx)),
+            None => (watcher(vec![self.path.clone()], cx), self.list(self.path.clone(), window, cx)),
         };
         self.watch(changes, window, cx);
         self.load_from(listing, LISTING_WAIT, window, cx);
@@ -278,7 +310,21 @@ impl Browser {
 
     /// Keeps up with the folder through `changes`, from its watcher.
     pub(super) fn watch(&mut self, changes: Changes, window: &mut Window, cx: &mut Context<Self>) {
-        self._watch = cx.spawn_in(window, async move |this, cx| {
+        self._watch = Self::keep_up(changes, window, cx);
+    }
+
+    /// Keeps up with the folders expanded in the listing too, whose changes count as its own.
+    pub(super) fn watch_expanded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let expanded = self.listing.expanded();
+        self._watch_expanded = match expanded.is_empty() {
+            true => Task::ready(()),
+            false => Self::keep_up(watcher(expanded, cx), window, cx),
+        };
+    }
+
+    /// Loads the folder again whenever `changes` has one, until the task is dropped.
+    fn keep_up(changes: Changes, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
             while let Some(changed) = changes.next().await {
                 let update = this.update_in(cx, |this, window, cx| {
                     this.load(window, cx);
@@ -289,7 +335,7 @@ impl Browser {
                     break;
                 }
             }
-        });
+        })
     }
 
     fn apply_listing(&mut self, (listed, layout): Listed, window: &mut Window, cx: &mut Context<Self>) {
@@ -300,14 +346,17 @@ impl Browser {
         if let Some(old) = std::mem::replace(&mut self.layout, layout) {
             cx.drop_image(old.picture, Some(window));
         }
+        let expanded = self.listing.expanded();
         match listed {
-            Ok(entries) => {
-                self.listing.entries = entries;
+            Ok((items, fits)) => {
+                self.listing.items = items;
+                self.fits = fits;
                 self.error = None;
                 self.blocked = None;
             }
             Err(error) => {
-                self.listing.entries.clear();
+                self.listing.items.clear();
+                self.fits = 0..usize::MAX;
                 // Privacy protection says EPERM, while plain file permissions say EACCES.
                 self.blocked =
                     (error.raw_os_error() == Some(libc::EPERM)).then(|| Permissions::global(cx).read(cx).watch());
@@ -323,13 +372,16 @@ impl Browser {
                 );
             }
         }
+        if self.listing.expanded() != expanded {
+            self.watch_expanded(window, cx);
+        }
         let after = std::mem::take(&mut self.after_load);
         let select: Vec<SharedString> = after
             .select
             .iter()
-            .filter(|path| path.parent() == Some(&self.path))
-            .filter_map(|path| path.file_name())
-            .map(|name| SharedString::from(name.to_string_lossy().into_owned()))
+            .filter_map(|path| path.strip_prefix(&self.path).ok())
+            .filter(|key| !key.as_os_str().is_empty())
+            .map(|key| SharedString::from(key.to_string_lossy().into_owned()))
             .collect();
         let selecting = !select.is_empty();
         if selecting {
@@ -357,16 +409,27 @@ impl Browser {
         let show_hidden = Settings::get(cx).show_hidden;
         let filter = self.filter.to_lowercase();
         let listing = &mut self.listing;
-        listing.visible = (0..listing.entries.len())
-            .filter(|&ix| show_hidden || !listing.entries[ix].hidden)
-            .filter(|&ix| filter.is_empty() || listing.entries[ix].name.to_lowercase().contains(&filter))
+        // What's in a folder that doesn't show doesn't either. The filter goes by the folder's own
+        // items, and what's in those that match shows with them.
+        let mut hidden_below = usize::MAX;
+        listing.visible = (0..listing.items.len())
+            .filter(|&ix| {
+                let Item { entry, depth, .. } = &listing.items[ix];
+                if *depth > hidden_below {
+                    return false;
+                }
+                let shows = (show_hidden || !entry.hidden)
+                    && (*depth > 0 || filter.is_empty() || entry.name.to_lowercase().contains(&filter));
+                hidden_below = if shows { usize::MAX } else { *depth };
+                shows
+            })
             .collect();
         self.selection.keep_to(&self.listing);
-        if self.rename.as_ref().is_some_and(|rename| self.listing.position(&rename.name).is_none()) {
+        if self.rename.as_ref().is_some_and(|rename| self.listing.position(&rename.key).is_none()) {
             self.rename = None;
         }
         self.spots = match &self.layout {
-            Some(layout) => layout.spots(self.listing.iter().map(|entry| entry.name.as_ref())),
+            Some(layout) => layout.spots(self.listing.iter().map(|item| item.entry.name.as_ref())),
             None => Vec::new(),
         };
         cx.notify();
@@ -400,9 +463,131 @@ impl Browser {
     }
 }
 
-/// Watches the folder at `path`, a change at a time once its burst settles.
-pub(super) fn watcher(path: &Path, cx: &App) -> Changes {
-    fs::watch(path, Duration::from_millis(120), cx.background_executor())
+/// Watches the folders at `paths`, a change at a time once its burst settles.
+pub(super) fn watcher(paths: Vec<PathBuf>, cx: &App) -> Changes {
+    fs::watch(paths, Duration::from_millis(120), cx.background_executor())
+}
+
+/// A folder's `entries`, sorted, with the items of the folders in them under them: a level at a
+/// time, each folder whose items fit in the `room` left, so as much as fits shows without a click.
+/// Links, aliases, other disks and what's only in iCloud stay as they are, as reading them can take
+/// a while or download them, like empty folders, which have nothing to show. Also gives
+/// the rooms it comes out the same in, so it's only done again once the room leaves them.
+fn expand(
+    mut entries: Vec<Entry>,
+    room: usize,
+    show_hidden: bool,
+    sort: SortKey,
+    descending: bool,
+) -> (Vec<Item>, Range<usize>) {
+    // Sorted first, so folders expand in the order they show in.
+    let sort = |entries: &mut Vec<Entry>| entries.sort_by(|a, b| compare(a, b, sort, descending));
+    sort(&mut entries);
+    let shown = |entries: &[Entry]| entries.iter().filter(|entry| show_hidden || !entry.hidden).count();
+    let openable = |entries: &[Entry]| -> Vec<PathBuf> {
+        entries
+            .iter()
+            .filter(|e| e.folder && !e.is_link && !e.mounted && !e.cloud_only && (show_hidden || !e.hidden))
+            .map(|e| e.path.clone())
+            .collect()
+    };
+    // The rows taken so far, and the least room another folder would fit in.
+    let (mut used, mut more) = (shown(&entries), usize::MAX);
+    let mut inside = HashMap::new();
+    let mut level = openable(&entries);
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for dir in level {
+            let left = room.saturating_sub(used);
+            if left == 0 {
+                // What's in the rest isn't known, but it takes a row at least.
+                more = more.min(used + 1);
+                break;
+            }
+            // Its names counted first, a few at most, so a big folder isn't read in full to find
+            // it doesn't fit.
+            let names = std::fs::read_dir(&dir).map(|names| {
+                let names = names.filter_map(Result::ok);
+                names
+                    .filter(|name| show_hidden || !name.file_name().as_bytes().starts_with(b"."))
+                    .take(left + 1)
+                    .count()
+            });
+            if let Ok(names) = names
+                && names > left
+            {
+                more = more.min(used + names);
+                continue;
+            }
+            let Ok(mut entries) = fs::list_dir(&dir) else { continue };
+            let count = shown(&entries);
+            if count == 0 {
+                continue;
+            }
+            if count > left {
+                more = more.min(used + count);
+                continue;
+            }
+            used += count;
+            sort(&mut entries);
+            next.extend(openable(&entries));
+            inside.insert(dir, entries);
+        }
+        level = next;
+    }
+    // With less room than it takes, a folder in it closes.
+    let fewer = if inside.is_empty() { 0 } else { used };
+    let mut items = Vec::new();
+    flatten(entries, None, 0, &mut inside, &mut items);
+    (items, fewer..more)
+}
+
+/// Adds `entries`, in folder `parent` (by key) `depth` folders in, to `items`, each followed by
+/// what's `inside` it.
+fn flatten(
+    entries: Vec<Entry>,
+    parent: Option<&str>,
+    depth: usize,
+    inside: &mut HashMap<PathBuf, Vec<Entry>>,
+    items: &mut Vec<Item>,
+) {
+    for entry in entries {
+        let key: SharedString = match parent {
+            Some(parent) => format!("{parent}/{}", entry.name).into(),
+            None => entry.name.clone(),
+        };
+        let children = inside.remove(&entry.path);
+        items.push(Item { entry, key: key.clone(), depth, expanded: children.is_some() });
+        if let Some(children) = children {
+            flatten(children, Some(&key), depth + 1, inside, items);
+        }
+    }
+}
+
+/// `items` in order, each expanded folder's items sorted among themselves after it.
+fn sort_tree(mut items: Vec<Item>, sort: SortKey, descending: bool) -> Vec<Item> {
+    let Some(depth) = items.first().map(|item| item.depth) else { return items };
+    if items.iter().all(|item| item.depth == depth) {
+        items.sort_by(|a, b| compare(&a.entry, &b.entry, sort, descending));
+        return items;
+    }
+    // Each item with what's under it.
+    let mut groups: Vec<Vec<Item>> = Vec::new();
+    for item in items {
+        match groups.last_mut() {
+            Some(group) if item.depth > depth => group.push(item),
+            _ => groups.push(vec![item]),
+        }
+    }
+    groups.sort_by(|a, b| compare(&a[0].entry, &b[0].entry, sort, descending));
+    groups
+        .into_iter()
+        .flat_map(|mut group| {
+            let inside = group.split_off(1);
+            group.extend(sort_tree(inside, sort, descending));
+            group
+        })
+        .collect()
 }
 
 /// The order items are shown in: folders first, then by `sort`, ties by name.
@@ -426,8 +611,8 @@ pub(super) mod tests {
 
     use gpui_kit::SharedString;
 
-    use super::{Listing, SortKey, compare};
-    use crate::fs::{Category, Entry};
+    use super::{Item, Listing, SortKey, compare, expand, sort_tree};
+    use crate::fs::{self, Category, Entry, Scratch};
 
     /// A file, or a folder with `folder`, named `name`.
     pub fn entry(name: &str, folder: bool) -> Entry {
@@ -438,6 +623,7 @@ pub(super) mod tests {
             folder,
             package: false,
             is_link: false,
+            mounted: false,
             custom_icon: false,
             locked: false,
             cloud_only: false,
@@ -451,9 +637,12 @@ pub(super) mod tests {
 
     /// A listing of files named `names` that shows them all, in that order.
     pub fn listing(names: &[&str]) -> Listing {
-        let entries: Vec<Entry> = names.iter().map(|name| entry(name, false)).collect();
-        let by_name = names.iter().enumerate().map(|(ix, name)| (SharedString::from(*name), ix)).collect();
-        Listing { visible: (0..entries.len()).collect(), by_name, entries, ..Listing::default() }
+        let items: Vec<Item> = names
+            .iter()
+            .map(|name| Item { entry: entry(name, false), key: (*name).into(), depth: 0, expanded: false })
+            .collect();
+        let by_key = names.iter().enumerate().map(|(ix, name)| (SharedString::from(*name), ix)).collect();
+        Listing { visible: (0..items.len()).collect(), by_key, items, ..Listing::default() }
     }
 
     /// The names of `entries` in the order `sort` puts them in.
@@ -489,5 +678,39 @@ pub(super) mod tests {
         let kind = |name: &str, kind: &str| Entry { kind: kind.to_string().into(), ..entry(name, false) };
         let entries = vec![kind("a", "Text 10"), kind("b", "Image"), kind("c", "text 9")];
         assert_eq!(sorted(entries, SortKey::Kind, false), ["b", "c", "a"]);
+    }
+
+    /// The keys of `items` that aren't hidden, each indented by its depth.
+    fn keys(items: &[Item]) -> Vec<String> {
+        let shown = items.iter().filter(|item| !item.entry.hidden);
+        shown.map(|item| format!("{}{}", "  ".repeat(item.depth), item.key)).collect()
+    }
+
+    #[test]
+    fn expands_folders_a_level_at_a_time_while_they_fit() {
+        let scratch = Scratch::new("expand");
+        let dir = &scratch.0;
+        for path in ["a/x", "a/y", "b/c", "big/1", "big/2", "big/3", "empty", "b/c/z"] {
+            std::fs::create_dir_all(dir.join(path)).unwrap();
+        }
+        std::fs::write(dir.join("a/.hidden"), "").unwrap();
+        std::fs::write(dir.join("file"), "").unwrap();
+        let expand = |room| expand(fs::list_dir(dir).unwrap(), room, false, SortKey::Name, false).0;
+        // Five rows, then a's two (its hidden file doesn't count), and b's one. big's three don't fit
+        // in the two left, and empty has nothing to show. c's goes in the next level.
+        let items = expand(9);
+        assert_eq!(keys(&items), ["a", "  a/x", "  a/y", "b", "  b/c", "    b/c/z", "big", "empty", "file"]);
+        // Too little room expands nothing.
+        assert_eq!(keys(&expand(5)), ["a", "b", "big", "empty", "file"]);
+        // It comes out the same until c closes, a row less, or what's in z might fit, a row more.
+        // With nothing expanded, it does until something might fit.
+        let fits = |room| super::expand(fs::list_dir(dir).unwrap(), room, false, SortKey::Name, false).1;
+        assert_eq!(fits(9), 9..10);
+        assert_eq!(fits(5), 0..6);
+        // Sorted the other way, what's in each folder stays under it.
+        assert_eq!(
+            keys(&sort_tree(items, SortKey::Name, true)),
+            ["empty", "big", "b", "  b/c", "    b/c/z", "a", "  a/y", "  a/x", "file"]
+        );
     }
 }

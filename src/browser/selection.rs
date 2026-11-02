@@ -15,10 +15,10 @@ use super::{
 };
 use crate::{fs::Entry, quicklook, workspace::TabEvent};
 
-/// What's selected, by name, so it holds as the folder reloads.
+/// What's selected, by key, so it holds as the folder reloads.
 #[derive(Default)]
 pub(super) struct Selection {
-    pub(super) names: HashSet<SharedString>,
+    pub(super) keys: HashSet<SharedString>,
     /// The item the arrow keys go on from, which an outline marks.
     pub(super) cursor: Option<SharedString>,
     /// Where a range selected with ⇧ starts from.
@@ -29,62 +29,62 @@ pub(super) struct Selection {
 }
 
 impl Selection {
-    pub(super) fn contains(&self, name: &str) -> bool {
-        self.names.contains(name)
+    pub(super) fn contains(&self, key: &str) -> bool {
+        self.keys.contains(key)
     }
 
     pub(super) fn len(&self) -> usize {
-        self.names.len()
+        self.keys.len()
     }
 
-    /// Selects just `names`, with the cursor and the anchor on the first.
-    pub(super) fn set(&mut self, names: Vec<SharedString>) {
-        self.cursor = names.first().cloned();
+    /// Selects just `keys`, with the cursor and the anchor on the first.
+    pub(super) fn set(&mut self, keys: Vec<SharedString>) {
+        self.cursor = keys.first().cloned();
         self.anchor = self.cursor.clone();
-        self.names = names.into_iter().collect();
+        self.keys = keys.into_iter().collect();
     }
 
     /// Selects item `ix` of `listing`, or with `extend`, the items from the anchor to it. The
     /// cursor goes to it.
     pub(super) fn select(&mut self, listing: &Listing, ix: usize, extend: bool) {
-        let name = listing[ix].name.clone();
+        let key = listing.key(ix).clone();
         let anchor_ix = self.anchor.as_ref().and_then(|anchor| listing.position(anchor));
         match anchor_ix.filter(|_| extend) {
             Some(anchor_ix) => {
                 let range = anchor_ix.min(ix)..=anchor_ix.max(ix);
-                self.names = range.map(|ix| listing[ix].name.clone()).collect();
+                self.keys = range.map(|ix| listing.key(ix).clone()).collect();
             }
             None => {
-                self.names = HashSet::from([name.clone()]);
-                self.anchor = Some(name.clone());
+                self.keys = HashSet::from([key.clone()]);
+                self.anchor = Some(key.clone());
             }
         }
-        self.cursor = Some(name);
+        self.cursor = Some(key);
     }
 
-    /// Selects `name`, or lets it go if it's selected, as a ⌘-click does. The cursor and the anchor
+    /// Selects `key`, or lets it go if it's selected, as a ⌘-click does. The cursor and the anchor
     /// go to it.
-    pub(super) fn toggle(&mut self, name: SharedString) {
-        if !self.names.remove(&name) {
-            self.names.insert(name.clone());
+    pub(super) fn toggle(&mut self, key: SharedString) {
+        if !self.keys.remove(&key) {
+            self.keys.insert(key.clone());
         }
-        self.cursor = Some(name.clone());
-        self.anchor = Some(name);
+        self.cursor = Some(key.clone());
+        self.anchor = Some(key);
     }
 
     /// Selects everything `listing` shows, with the cursor on the first item unless it's somewhere.
     pub(super) fn select_all(&mut self, listing: &Listing) {
-        self.names = listing.iter().map(|e| e.name.clone()).collect();
+        self.keys = listing.iter().map(|item| item.key.clone()).collect();
         if self.cursor.is_none() && !listing.is_empty() {
-            self.cursor = Some(listing[0].name.clone());
+            self.cursor = Some(listing.key(0).clone());
         }
     }
 
     /// Lets go of what `listing` doesn't show, the cursor and the anchor too.
     pub(super) fn keep_to(&mut self, listing: &Listing) {
-        self.names.retain(|name| listing.position(name).is_some());
+        self.keys.retain(|key| listing.position(key).is_some());
         for slot in [&mut self.cursor, &mut self.anchor] {
-            if slot.as_ref().is_some_and(|name| listing.position(name).is_none()) {
+            if slot.as_ref().is_some_and(|key| listing.position(key).is_none()) {
                 *slot = None;
             }
         }
@@ -92,8 +92,8 @@ impl Selection {
 }
 
 impl Browser {
-    pub(super) fn name_at(&self, ix: usize) -> SharedString {
-        self.listing[ix].name.clone()
+    pub(super) fn key_at(&self, ix: usize) -> SharedString {
+        self.listing.key(ix).clone()
     }
 
     pub(super) fn cursor_ix(&self) -> Option<usize> {
@@ -106,14 +106,21 @@ impl Browser {
 
     /// The item under the cursor, if it's selected.
     pub(super) fn selected_cursor_entry(&self) -> Option<&Entry> {
-        self.cursor_entry().filter(|entry| self.selection.contains(&entry.name))
+        self.selection.cursor.as_ref().filter(|key| self.selection.contains(key))?;
+        self.cursor_entry()
     }
 
-    /// Selected entries in display order.
+    /// Selected entries in display order, less those in selected folders, which go with them.
     pub(super) fn selected_entries(&self) -> Vec<&Entry> {
-        let mut ixs: Vec<usize> = self.selection.names.iter().filter_map(|name| self.listing.position(name)).collect();
+        let selected = self.selection.keys.iter().filter(|key| !self.in_selected_folder(key));
+        let mut ixs: Vec<usize> = selected.filter_map(|key| self.listing.position(key)).collect();
         ixs.sort_unstable();
         ixs.into_iter().map(|ix| &self.listing[ix]).collect()
+    }
+
+    /// Whether the item with `key` is in a folder that's selected, expanded above it.
+    pub(super) fn in_selected_folder(&self, key: &str) -> bool {
+        key.match_indices('/').any(|(at, _)| self.selection.contains(&key[..at]))
     }
 
     pub fn selected_paths(&self) -> Vec<PathBuf> {
@@ -171,7 +178,7 @@ impl Browser {
         if quicklook::close() {
             return;
         }
-        self.selection.names.clear();
+        self.selection.keys.clear();
         cx.notify();
     }
 
@@ -187,11 +194,11 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         self.focus_handle.focus(window, cx);
-        let name = self.name_at(ix);
+        let key = self.key_at(ix);
         let modifiers = event.modifiers;
         let plain = !modifiers.shift && !modifiers.platform;
         if plain && event.click_count == 1 {
-            self.selection.before_click = self.selection.names.clone();
+            self.selection.before_click = self.selection.keys.clone();
         }
         if modifiers.platform && event.click_count == 2 {
             // ⌘-double-click opens a folder in a new tab, like Finder. The first click selected it.
@@ -202,15 +209,15 @@ impl Browser {
         } else if modifiers.shift {
             self.select_ix(ix, true, cx);
         } else if modifiers.platform {
-            self.selection.toggle(name);
-        } else if !grabbed || !self.selection.contains(&name) {
+            self.selection.toggle(key.clone());
+        } else if !grabbed || !self.selection.contains(&key) {
             self.select_ix(ix, false, cx);
         } else {
-            self.selection.cursor = Some(name);
+            self.selection.cursor = Some(key.clone());
         }
         if plain && event.click_count == 2 {
-            if self.selection.before_click.contains(&self.listing[ix].name) {
-                self.selection.names = std::mem::take(&mut self.selection.before_click);
+            if self.selection.before_click.contains(&key) {
+                self.selection.keys = std::mem::take(&mut self.selection.before_click);
             }
             self.open(window, cx);
         }
@@ -253,7 +260,7 @@ impl Browser {
         self.type_ahead.push_str(text);
         self.type_ahead_at = Instant::now();
         let needle = self.type_ahead.to_lowercase();
-        let found = self.listing.iter().position(|e| e.name.to_lowercase().starts_with(&needle));
+        let found = self.listing.iter().position(|item| item.entry.name.to_lowercase().starts_with(&needle));
         if let Some(ix) = found {
             self.select_ix(ix, false, cx);
         }
@@ -266,7 +273,7 @@ mod tests {
     use crate::browser::listing::tests::listing;
 
     fn names(selection: &Selection) -> Vec<&str> {
-        let mut names: Vec<&str> = selection.names.iter().map(|name| name.as_ref()).collect();
+        let mut names: Vec<&str> = selection.keys.iter().map(|key| key.as_ref()).collect();
         names.sort();
         names
     }
