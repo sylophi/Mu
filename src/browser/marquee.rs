@@ -40,14 +40,14 @@ impl Browser {
     pub(super) fn press_listing(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         let extend = event.modifiers.platform || event.modifiers.shift;
-        let base = if extend { self.selection.names.clone() } else { HashSet::new() };
+        let base = if extend { self.selection.keys.clone() } else { HashSet::new() };
         let (bounds, offset) = self.viewport();
         let start = event.position - bounds.origin - offset;
         let row = (start.y / ROW_HEIGHT).floor() as usize;
         if matches!(self.mode(cx), Mode::List) && start.y >= px(0.) && row < self.listing.len() {
             self.press_item(row, event, false, window, cx);
         } else if !extend {
-            self.selection.names.clear();
+            self.selection.keys.clear();
         }
         self.marquee = Some(Marquee { start, pointer: None, offset, base, _scroll: Task::ready(()) });
         cx.notify();
@@ -98,17 +98,17 @@ impl Browser {
         let touched: Vec<usize> =
             (0..self.listing.len()).filter(|&ix| self.item_bounds(ix, cx).intersects(&area)).collect();
         for &ix in &touched {
-            let name = self.name_at(ix);
-            if !selection.remove(&name) {
-                selection.insert(name);
+            let key = self.key_at(ix);
+            if !selection.remove(&key) {
+                selection.insert(key);
             }
         }
-        self.selection.names = selection;
+        self.selection.keys = selection;
         // The cursor goes where the drag is headed, so the keyboard carries on from there.
         if let (Some(&first), Some(&last)) = (touched.first(), touched.last()) {
             let (from, to) = if end.y < start.y { (last, first) } else { (first, last) };
-            self.selection.anchor = Some(self.name_at(from));
-            self.selection.cursor = Some(self.name_at(to));
+            self.selection.anchor = Some(self.key_at(from));
+            self.selection.cursor = Some(self.key_at(to));
         }
         cx.notify();
     }
@@ -160,10 +160,10 @@ impl Browser {
     pub(super) fn press_listing_right(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
         match self.item_at(event.position, cx) {
-            Some(ix) if self.selection.contains(&self.name_at(ix)) => {}
+            Some(ix) if self.selection.contains(&self.key_at(ix)) => {}
             Some(ix) => self.select_ix(ix, false, cx),
             None => {
-                self.selection.names.clear();
+                self.selection.keys.clear();
                 cx.notify();
             }
         }
@@ -173,7 +173,7 @@ impl Browser {
     /// if it's open. It's what a tap with three fingers does in Finder.
     pub fn look_up(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
         let Some(ix) = self.item_at(position, cx) else { return };
-        if self.selection.contains(&self.name_at(ix)) {
+        if self.selection.contains(&self.key_at(ix)) {
             quicklook::toggle(self.selected_paths());
         } else {
             self.select_ix(ix, false, cx);

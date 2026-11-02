@@ -18,6 +18,8 @@ pub struct Settings {
     pub show_preview: bool,
     /// Whether folders show as a grid of icons instead of a list.
     pub grid: bool,
+    /// Whether the list shows what's in the folders in it, under them, as far as it has room.
+    pub smart_expansion: bool,
     pub favorites: Vec<PathBuf>,
     /// How wide the list's Name, Date Modified, Size and Kind columns are.
     pub column_widths: [Pixels; 4],
@@ -55,6 +57,7 @@ impl Default for Settings {
             show_sidebar: true,
             show_preview: false,
             grid: false,
+            smart_expansion: true,
             favorites: vec![
                 home.clone(),
                 home.join("Desktop"),

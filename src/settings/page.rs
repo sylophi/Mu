@@ -197,7 +197,8 @@ impl Render for SettingsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let missing = Permissions::global(cx).read(cx).missing() > 0;
         let settings = Settings::get(cx);
-        let (edit_text, extract_archives) = (settings.edit_text, settings.extract_archives);
+        let (smart_expansion, edit_text, extract_archives) =
+            (settings.smart_expansion, settings.edit_text, settings.extract_archives);
         let theme = cx.theme();
         div().id("settings").size_full().overflow_y_scroll().track_focus(&self.focus_handle).bg(theme.background).child(
             v_flex()
@@ -241,6 +242,13 @@ impl Render for SettingsPage {
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(ImportFromFinder), cx)),
                 ))
                 .children(finder::shows_for_finder().map(|on| self.render_file_viewer(on, cx)))
+                .child(self.render_switch(
+                    "Smart expansion",
+                    "Expand nested folders in list view when the window is tall enough to show them.",
+                    smart_expansion,
+                    |settings, on| settings.smart_expansion = on,
+                    cx,
+                ))
                 .child(self.render_switch(
                     "Open text files in Mu's editor",
                     "Instead of TextEdit.",

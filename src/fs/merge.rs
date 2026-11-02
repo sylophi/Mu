@@ -199,6 +199,18 @@ pub fn copy_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
     merge.done(landed.into_iter().flatten().collect(), error)
 }
 
+/// Copies each of `sources` next to itself, under a name of its own, like "notes copy.txt".
+pub fn duplicate(sources: &[PathBuf], progress: &Progress) -> Done {
+    progress.expect(sources);
+    let (made, error) = each(sources, |source| {
+        let dir = source.parent().context("Can't duplicate the top of a disk")?;
+        let target = unique_path(dir, &disk_name(source).to_string_lossy(), true);
+        copy_path(source, &target, progress)?;
+        Ok(target)
+    });
+    Done::created(made, error)
+}
+
 /// Moves `sources` into `dir`. Folders merge into folders with their names there, like Windows,
 /// and each clash goes as `choices` says. A folder that's emptied goes to the Trash.
 pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
@@ -229,6 +241,20 @@ pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
 mod tests {
     use super::*;
     use crate::fs::{Cancelled, Scratch, tests::names};
+
+    #[test]
+    fn duplicates_each_next_to_itself() {
+        let scratch = Scratch::new("duplicate");
+        let dir = &scratch.0;
+        fs::create_dir(dir.join("inner")).unwrap();
+        fs::write(dir.join("a.txt"), "a").unwrap();
+        fs::write(dir.join("inner/b.txt"), "b").unwrap();
+        let done = duplicate(&[dir.join("a.txt"), dir.join("inner/b.txt")], &Progress::default());
+        assert_eq!(done.paths, [dir.join("a copy.txt"), dir.join("inner/b copy.txt")]);
+        assert_eq!(fs::read_to_string(dir.join("inner/b copy.txt")).unwrap(), "b");
+        // Undoing takes the copies away.
+        assert_eq!(done.undo, Some(Undo::Trash(done.paths.clone())));
+    }
 
     #[test]
     fn counts_and_cancels_copies() {

@@ -8,7 +8,7 @@ use gpui_kit::*;
 use super::Browser;
 use crate::{
     drag,
-    fs::{self, Category, Choices, Done, Entry, Progress},
+    fs::{self, Category, Done, Entry, Progress},
     history::{self, Op},
     operations, pasteboard,
     settings::Settings,
@@ -34,7 +34,8 @@ impl CutFiles {
 impl Global for CutFiles {}
 
 pub(super) struct RenameState {
-    pub(super) name: SharedString,
+    pub(super) key: SharedString,
+    name: SharedString,
     path: PathBuf,
     pub(super) input: Entity<InputState>,
     _subscription: Subscription,
@@ -74,7 +75,8 @@ impl Browser {
             }
         }
         if !archives.is_empty() {
-            let dir = self.path.clone();
+            // Next to the archive, like Archive Utility.
+            let dir = folder_of(&archives);
             self.run(Op::Extract, move |_| fs::extract(&archives, &dir), false, window, cx).detach();
         }
     }
@@ -118,7 +120,7 @@ impl Browser {
 
     /// The app selected on its own, to remove.
     fn app_to_uninstall(&self) -> Option<&Entry> {
-        if self.selection.names.len() != 1 || self.in_trash() {
+        if self.selection.len() != 1 || self.in_trash() {
             return None;
         }
         self.selected_entries().pop().filter(|entry| entry.category == Category::App)
@@ -235,14 +237,15 @@ impl Browser {
         if self.in_trash() {
             return self.put_back(window, cx);
         }
-        // Like Explorer, the cursor lands on whatever follows the trashed items.
+        // Like Explorer, the cursor lands on whatever follows the trashed items, and what's in them.
+        let goes = |key: &str| self.selection.contains(key) || self.in_selected_folder(key);
         let after = self
             .listing
             .iter()
-            .skip_while(|e| !self.selection.contains(&e.name))
-            .find(|e| !self.selection.contains(&e.name))
-            .or_else(|| self.listing.iter().rev().find(|e| !self.selection.contains(&e.name)))
-            .map(|e| e.path.clone());
+            .skip_while(|item| !goes(&item.key))
+            .find(|item| !goes(&item.key))
+            .or_else(|| self.listing.iter().rev().find(|item| !goes(&item.key)))
+            .map(|item| item.entry.path.clone());
         let task = operations::trash(paths, window, cx);
         let task = cx.spawn(async move |_, _| Some(Done { paths: after.into_iter().collect(), ..task.await? }));
         self.settle(task, false, window, cx).detach();
@@ -296,16 +299,14 @@ impl Browser {
     pub(super) fn duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = self.selected_paths();
         if !paths.is_empty() {
-            let dir = self.path.clone();
-            let duplicate = move |progress: &Progress| fs::copy_into(&paths, &dir, &Choices::new(), progress);
-            self.run(Op::Duplicate, duplicate, false, window, cx).detach();
+            self.run(Op::Duplicate, move |progress| fs::duplicate(&paths, progress), false, window, cx).detach();
         }
     }
 
     pub(super) fn compress(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let paths = self.selected_paths();
         if !paths.is_empty() {
-            let dir = self.path.clone();
+            let dir = folder_of(&paths);
             self.run(Op::Compress, move |_| fs::compress(&paths, &dir), false, window, cx).detach();
         }
     }
@@ -339,13 +340,15 @@ impl Browser {
     // Renaming
 
     pub(super) fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(entry) = self.cursor_entry() else { return };
+        let Some(ix) = self.cursor_ix() else { return };
+        let entry = &self.listing[ix];
         let (name, path) = (entry.name.clone(), entry.path.clone());
         let stem_len = match name.rsplit_once('.') {
             Some((stem, _)) if !stem.is_empty() && !entry.folder => stem.len(),
             _ => name.len(),
         };
-        self.selection.names = HashSet::from([name.clone()]);
+        let key = self.key_at(ix);
+        self.selection.keys = HashSet::from([key.clone()]);
         let input = cx.new(|cx| InputState::new(window, cx).default_value(name.clone()));
         input.update(cx, |input, cx| {
             input.focus(window, cx);
@@ -355,7 +358,7 @@ impl Browser {
             InputEvent::PressEnter { .. } | InputEvent::Blur => this.commit_rename(window, cx),
             _ => {}
         });
-        self.rename = Some(RenameState { name, path, input, _subscription: subscription });
+        self.rename = Some(RenameState { key, name, path, input, _subscription: subscription });
         if let Some(ix) = self.cursor_ix() {
             self.scroll_to(ix, ScrollStrategy::Nearest, cx);
         }
@@ -381,4 +384,10 @@ impl Browser {
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
+}
+
+/// The folder `paths` are in, the first's when they're in more than one, as an expanded folder's
+/// items and the folder's own can be.
+fn folder_of(paths: &[PathBuf]) -> PathBuf {
+    paths[0].parent().unwrap_or(&paths[0]).to_path_buf()
 }
