@@ -5,7 +5,6 @@ mod overview;
 mod startup;
 pub mod storage;
 mod uninstall;
-mod updates;
 
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _,
