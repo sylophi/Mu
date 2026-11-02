@@ -3,6 +3,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use super::{Progress, clear_origin, each, move_path, same_volume, trash};
 
 /// What a file operation did: the items it made or moved (to select), how to take it back, and
@@ -39,7 +41,7 @@ impl Done {
 
 /// How to take a file operation back. Doing that returns what takes the undo back in turn, which
 /// is how redo works.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Undo {
     /// Moves each item (from, to), keeping both if `to`'s name has been taken since.
     Move(Vec<(PathBuf, PathBuf)>),

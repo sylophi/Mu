@@ -85,10 +85,15 @@ pub fn load<T: DeserializeOwned + Default>(name: &str) -> T {
         .unwrap_or_default()
 }
 
-/// Remembers `value` in file `name`.
+/// Remembers `value` in file `name`. It's written aside and then moved over the old one, so
+/// quitting halfway leaves the old one whole.
 pub fn store(name: &str, value: &impl Serialize) {
-    let _ = std::fs::create_dir_all(support_dir());
-    let _ = std::fs::write(support_dir().join(name), serde_json::to_vec_pretty(value).unwrap());
+    let dir = support_dir();
+    let temp = dir.join(format!(".{name}"));
+    let _ = std::fs::create_dir_all(&dir);
+    // A path that isn't UTF-8 can't be written as JSON.
+    let Ok(json) = serde_json::to_vec_pretty(value) else { return };
+    let _ = std::fs::write(&temp, json).and_then(|()| std::fs::rename(&temp, dir.join(name)));
 }
 
 impl Settings {
