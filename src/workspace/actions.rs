@@ -13,7 +13,7 @@ use objc2_foundation::{NSDictionary, NSString};
 use super::{
     Item, Workspace,
     sidebar::empty_trash,
-    windows::{open_asked, open_window, quit},
+    windows::{open_asked, open_window, quit, workspaces},
 };
 use crate::{
     browser::{
@@ -173,12 +173,13 @@ pub(super) fn init(cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &About, _| show_about());
     cx.on_action(|_: &BringAllToFront, _| ns_app().arrangeInFront(None));
-    // For the Dock's menu, and the menu bar when no window is in front to do them there.
+    // For the Dock's menu, and the menu bar when no window is in front to do them there. They
+    // open where the window in front is.
     cx.on_action(|_: &NewWindow, cx| {
-        open_window(home_dir(), cx);
+        open_window(front_dir(cx), cx);
         cx.activate(true);
     });
-    cx.on_action(|_: &NewTerminal, cx| open_asked(vec![Tab::Terminal(home_dir())], cx));
+    cx.on_action(|_: &NewTerminal, cx| open_asked(vec![Tab::Terminal(front_dir(cx))], cx));
     cx.on_action(|_: &ShowActivity, cx| open_asked(vec![Tab::Activity], cx));
     cx.on_action(|_: &ShowThisMac, cx| open_asked(vec![Tab::ThisMac], cx));
     cx.set_dock_menu(vec![
@@ -295,6 +296,11 @@ pub fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Bring All to Front", BringAllToFront),
         ]),
     ]
+}
+
+/// The folder the window in front is in, or the home folder when there's none.
+fn front_dir(cx: &App) -> PathBuf {
+    workspaces(cx).first().map_or_else(home_dir, |(_, workspace)| workspace.read(cx).current_dir(cx))
 }
 
 fn ns_app() -> Retained<NSApplication> {
