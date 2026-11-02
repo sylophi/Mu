@@ -37,9 +37,10 @@ pub(super) fn init(cx: &mut App) {
 /// it, since only then can that window say where it is.
 pub fn open_window(path: PathBuf, cx: &mut App) {
     cx.defer(move |cx| {
-        let front = cx
-            .active_window()
-            .and_then(|handle| handle.update(cx, |_, window, cx| (window.bounds(), window.display(cx))).ok());
+        // Not the active window, which there's none of while Mu is in the background.
+        let front = workspaces(cx)
+            .first()
+            .and_then(|(handle, _)| handle.update(cx, |_, window, cx| (window.bounds(), window.display(cx))).ok());
         let (display_id, bounds) = match front {
             Some((front, Some(display))) => {
                 let mut bounds = Bounds::new(front.origin + point(px(24.), px(24.)), front.size);
