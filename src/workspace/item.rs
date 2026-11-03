@@ -56,6 +56,7 @@ impl Item {
             Tab::Folder(path) => Item::Folder(cx.new(|cx| Browser::new(path, window, cx))),
             Tab::Terminal(dir) => Item::Terminal(cx.new(|cx| TerminalView::new(dir, cx))),
             Tab::Editor(path) => Item::Editor(cx.new(|cx| FileEditor::new(path, window, cx))),
+            Tab::Untitled(dir) => Item::Editor(cx.new(|cx| FileEditor::untitled(dir, window, cx))),
             Tab::Search(root) => Item::Search(cx.new(|cx| Search::new(root, window, cx))),
             Tab::Activity => Item::Activity(cx.new(|cx| Activity::new(window, cx))),
             Tab::ThisMac | Tab::Startup | Tab::Storage(_) => Item::Mac(cx.new(|cx| ThisMac::new(tab, cx))),
@@ -66,10 +67,10 @@ impl Item {
     }
 
     /// Whether it shows `tab` already, so showing that again shows this. Folders and terminals open
-    /// anew each time, and there's one of each of Mu's own pages.
+    /// anew each time, as do new files, and there's one of each of Mu's own pages.
     pub(super) fn shows(&self, tab: &Tab, cx: &App) -> bool {
         match (self, tab) {
-            (Item::Editor(editor), Tab::Editor(path)) => editor.read(cx).path() == path,
+            (Item::Editor(editor), Tab::Editor(path)) => editor.read(cx).path() == Some(path.as_path()),
             (Item::Search(search), Tab::Search(root)) => search.read(cx).root() == root,
             (Item::Uninstall(page), Tab::Uninstall(app)) => page.read(cx).path() == app,
             (Item::Activity(_), Tab::Activity)
@@ -118,7 +119,7 @@ impl Item {
         match self {
             Item::Folder(e) => Tab::Folder(e.read(cx).path().to_path_buf()),
             Item::Terminal(e) => Tab::Terminal(e.read(cx).cwd()),
-            Item::Editor(e) => Tab::Editor(e.read(cx).path().to_path_buf()),
+            Item::Editor(e) => e.read(cx).saved(),
             Item::Search(e) => Tab::Search(e.read(cx).root().to_path_buf()),
             Item::Activity(_) => Tab::Activity,
             Item::Mac(e) => e.read(cx).saved(cx),
@@ -136,7 +137,10 @@ impl Item {
         match self {
             Item::Folder(e) => icons::item(e.read(cx).path(), true, size).into_any_element(),
             Item::Terminal(_) => lucide(IconName::SquareTerminal, cx),
-            Item::Editor(e) => icons::item(e.read(cx).path(), false, size).into_any_element(),
+            Item::Editor(e) => match e.read(cx).path() {
+                Some(path) => icons::item(path, false, size).into_any_element(),
+                None => lucide(IconName::SquarePen, cx),
+            },
             Item::Search(_) => lucide(IconName::Search, cx),
             Item::Activity(_) => lucide(IconName::Activity, cx),
             Item::Mac(_) => lucide(IconName::Laptop, cx),

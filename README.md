@@ -69,7 +69,7 @@ Other apps can do the same with a link, like `mu://folder/Users/me/Downloads`.
 | Undo / redo | ⌘Z / ⇧⌘Z |
 | Filter / find in folder | ⌘F / ⇧⌘F |
 | New tab / close tab / reopen closed tab | ⌘T / ⌘W / ⇧⌘T |
-| New terminal | ⌃` |
+| New terminal / new editor | ⌃` / ⌥⌘N |
 | Grid or list | ⇥ |
 | Sidebar / preview / hidden files | ⌘B / ⌘P / ⇧⌘. |
 

@@ -15,6 +15,8 @@ pub enum Tab {
     /// A shell, started again in the folder it was last in.
     Terminal(PathBuf),
     Editor(PathBuf),
+    /// An editor for a new file, saved from this folder.
+    Untitled(PathBuf),
     /// Find in folder, from this folder.
     Search(PathBuf),
     Activity,
@@ -34,9 +36,12 @@ impl Tab {
     /// Where it opens, unless it opens anywhere.
     pub fn path(&self) -> Option<&PathBuf> {
         match self {
-            Tab::Folder(path) | Tab::Terminal(path) | Tab::Editor(path) | Tab::Search(path) | Tab::Storage(path) => {
-                Some(path)
-            }
+            Tab::Folder(path)
+            | Tab::Terminal(path)
+            | Tab::Editor(path)
+            | Tab::Untitled(path)
+            | Tab::Search(path)
+            | Tab::Storage(path) => Some(path),
             Tab::Activity | Tab::ThisMac | Tab::Startup | Tab::History | Tab::Settings | Tab::Uninstall(_) => None,
         }
     }
