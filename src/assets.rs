@@ -13,6 +13,7 @@ gpui_kit::assets::icon_assets!(
         AppWindowMac,
         ArchiveRestore,
         ClipboardPaste,
+        Cloud,
         CloudDownload,
         Columns2,
         CopyPlus,
