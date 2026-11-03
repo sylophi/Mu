@@ -144,8 +144,9 @@ pub struct Browser {
     forward: Vec<PathBuf>,
     listing: Listing,
     error: Option<SharedString>,
-    /// Set while macOS's privacy protection keeps this folder closed, which Full Disk Access opens.
-    blocked: Option<permissions::Watch>,
+    /// Set while macOS's privacy protection keeps this folder closed, with the permission that
+    /// opens it.
+    blocked: Option<(Permission, permissions::Watch)>,
     filter: SharedString,
     selection: Selection,
     rename: Option<RenameState>,
@@ -338,10 +339,9 @@ impl Browser {
     /// What it keeps up with in the window it's in.
     fn observe_in_window(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 3] {
         [
-            // Opens the folder as soon as Full Disk Access is switched on.
+            // Opens the folder as soon as the permission it's missing is switched on.
             cx.observe_in(&Permissions::global(cx), window, |this, permissions, window, cx| {
-                if this.blocked.is_some() && permissions.read(cx).status(Permission::FullDiskAccess) == Status::Granted
-                {
+                if this.blocked.as_ref().is_some_and(|(p, _)| permissions.read(cx).status(*p) == Status::Granted) {
                     this.load(window, cx);
                 }
             }),
@@ -502,8 +502,11 @@ impl Render for Browser {
                 Mode::List | Mode::Grid => self.render_listing(cx),
             })
             .children(empty_message.map(|message| {
-                let fix = self.blocked.is_some()
-                    && Permissions::global(cx).read(cx).status(Permission::FullDiskAccess) != Status::Granted;
+                let fix = self
+                    .blocked
+                    .as_ref()
+                    .map(|(permission, _)| *permission)
+                    .filter(|p| Permissions::global(cx).read(cx).status(*p) != Status::Granted);
                 v_flex()
                     .absolute()
                     .inset_0()
@@ -514,14 +517,15 @@ impl Render for Browser {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(message)
-                    .when(fix, |el| {
+                    .when_some(fix, |el, permission| {
                         el.child(
-                            Button::new("allow-access").primary().small().label("Allow Full Disk Access").on_click(
-                                |_, _, cx| {
-                                    Permissions::global(cx)
-                                        .update(cx, |p, cx| p.allow(&[Permission::FullDiskAccess], cx))
-                                },
-                            ),
+                            Button::new("allow-access")
+                                .primary()
+                                .small()
+                                .label(format!("Allow {}", permission.name()))
+                                .on_click(move |_, _, cx| {
+                                    Permissions::global(cx).update(cx, |p, cx| p.allow(&[permission], cx))
+                                }),
                         )
                     })
             }))

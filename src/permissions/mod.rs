@@ -4,7 +4,8 @@
 mod guide;
 
 use std::{
-    cell::Cell, collections::HashMap, ffi::c_void, mem, net::UdpSocket, ptr, rc::Rc, sync::LazyLock, time::Duration,
+    cell::Cell, collections::HashMap, ffi::c_void, mem, net::UdpSocket, path::Path, ptr, rc::Rc, sync::LazyLock,
+    time::Duration,
 };
 
 use gpui_kit::assets::IconName;
@@ -16,11 +17,13 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use objc2_core_foundation::CFString;
 
+use crate::fs;
 use guide::Guide;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Permission {
     FullDiskAccess,
+    ICloudDrive,
     AppManagement,
     LocalNetwork,
     DeveloperTools,
@@ -35,12 +38,30 @@ pub enum Status {
 }
 
 impl Permission {
-    pub const ALL: [Permission; 4] =
-        [Permission::FullDiskAccess, Permission::AppManagement, Permission::LocalNetwork, Permission::DeveloperTools];
+    /// The ones this Mac has: iCloud Drive's only while it's switched on.
+    pub fn all() -> impl Iterator<Item = Permission> {
+        let icloud = fs::icloud_drive().is_dir();
+        [
+            Permission::FullDiskAccess,
+            Permission::ICloudDrive,
+            Permission::AppManagement,
+            Permission::LocalNetwork,
+            Permission::DeveloperTools,
+        ]
+        .into_iter()
+        .filter(move |&permission| permission != Permission::ICloudDrive || icloud)
+    }
 
-    fn name(self) -> &'static str {
+    /// The one that lets Mu past macOS's privacy protection at `path`. Full Disk Access doesn't
+    /// cover iCloud Drive, which has a permission of its own.
+    pub fn for_path(path: &Path) -> Permission {
+        if path.starts_with(fs::icloud_drive()) { Permission::ICloudDrive } else { Permission::FullDiskAccess }
+    }
+
+    pub fn name(self) -> &'static str {
         match self {
             Permission::FullDiskAccess => "Full Disk Access",
+            Permission::ICloudDrive => "iCloud Drive",
             Permission::AppManagement => "App Management",
             Permission::LocalNetwork => "Local Network",
             Permission::DeveloperTools => "Developer Tools",
@@ -50,6 +71,7 @@ impl Permission {
     fn reason(self) -> &'static str {
         match self {
             Permission::FullDiskAccess => "Open every folder, including Mail, Safari and other apps' data.",
+            Permission::ICloudDrive => "Open and change what's in iCloud Drive, which Full Disk Access doesn't cover.",
             Permission::AppManagement => "Update and delete apps, like Homebrew upgrading casks.",
             Permission::LocalNetwork => "Reach devices on your network: ssh, local servers and other Macs.",
             Permission::DeveloperTools => "Run what you build in the terminal without macOS checking it first.",
@@ -59,6 +81,7 @@ impl Permission {
     fn icon(self) -> IconName {
         match self {
             Permission::FullDiskAccess => IconName::HardDrive,
+            Permission::ICloudDrive => IconName::Cloud,
             Permission::AppManagement => IconName::Package,
             Permission::LocalNetwork => IconName::Network,
             Permission::DeveloperTools => IconName::Hammer,
@@ -71,10 +94,13 @@ impl Permission {
     }
 
     /// Its page in System Settings. Local Network's can't be linked to, so that one opens the
-    /// Privacy & Security page it's listed on.
+    /// Privacy & Security page it's listed on. iCloud Drive's switch is under Mu in Files & Folders.
     fn settings_url(self) -> &'static str {
         match self {
             Permission::FullDiskAccess => "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+            Permission::ICloudDrive => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+            }
             Permission::AppManagement => "x-apple.systempreferences:com.apple.preference.security?Privacy_AppBundles",
             Permission::LocalNetwork => "x-apple.systempreferences:com.apple.preference.security?Privacy",
             Permission::DeveloperTools => "x-apple.systempreferences:com.apple.preference.security?Privacy_DevTools",
@@ -84,6 +110,8 @@ impl Permission {
 
 pub struct Permissions {
     statuses: HashMap<Permission, Status>,
+    /// Whether they're being checked now.
+    checking: bool,
     watchers: Rc<Cell<usize>>,
     guide: Option<Guide>,
     /// Whether the sheet that asks for them has been up, which it is once per launch, not per window.
@@ -128,7 +156,8 @@ impl Permissions {
                 }
             }
         });
-        let mut this = Self { statuses: HashMap::new(), watchers, guide: None, onboarded: false, _poll: poll };
+        let mut this =
+            Self { statuses: HashMap::new(), checking: false, watchers, guide: None, onboarded: false, _poll: poll };
         this.refresh(cx);
         this
     }
@@ -144,7 +173,7 @@ impl Permissions {
 
     /// Required permissions that aren't granted.
     pub fn missing(&self) -> usize {
-        Permission::ALL.iter().filter(|p| p.required() && self.status(**p) != Status::Granted).count()
+        Permission::all().filter(|p| p.required() && self.status(*p) != Status::Granted).count()
     }
 
     /// Keeps them refreshing for the sheet that asks for them, the first time it's asked for while a
@@ -164,10 +193,16 @@ impl Permissions {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // iCloud Drive's prompt holds a check up till it's answered.
+        if self.checking {
+            return;
+        }
+        self.checking = true;
         let check = cx.background_spawn(async { check() });
         cx.spawn(async move |this, cx| {
             let statuses = check.await;
             this.update(cx, |this, cx| {
+                this.checking = false;
                 if this.statuses != statuses {
                     this.statuses = statuses;
                     if let Some(guide) = &mut this.guide {
@@ -187,7 +222,7 @@ impl Permissions {
 
     /// Asks for the ones of `permissions` that aren't allowed by guiding you through System
     /// Settings. Local Network's own prompt has come up already, when Mu looked for file servers at
-    /// launch.
+    /// launch, as iCloud Drive's has when Mu first looked in it.
     pub fn allow(&mut self, permissions: &[Permission], cx: &mut Context<Self>) {
         let steps = permissions.iter().copied().filter(|&permission| self.status(permission) != Status::Granted);
         self.guide = Guide::new(steps.collect(), self.watch(), cx);
@@ -198,6 +233,7 @@ impl Permissions {
 fn check() -> HashMap<Permission, Status> {
     HashMap::from([
         (Permission::FullDiskAccess, granted("kTCCServiceSystemPolicyAllFiles")),
+        (Permission::ICloudDrive, icloud_drive_access()),
         (Permission::AppManagement, granted("kTCCServiceSystemPolicyAppBundles")),
         (Permission::LocalNetwork, local_network()),
         (Permission::DeveloperTools, granted("kTCCServiceDeveloperTool")),
@@ -217,6 +253,17 @@ fn granted(service: &str) -> Status {
     match unsafe { PREFLIGHT(&CFString::from_str(service), ptr::null()) } {
         0 => Status::Granted,
         _ => Status::Missing,
+    }
+}
+
+/// Looks in iCloud Drive, as its permission is kept for each file provider and the privacy daemon
+/// can't be asked about it like the others. Turned down, that fails with "operation not
+/// permitted". Asked for the first time, it brings up the system's prompt and waits for it.
+fn icloud_drive_access() -> Status {
+    match std::fs::read_dir(fs::icloud_drive()) {
+        Ok(_) => Status::Granted,
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => Status::Missing,
+        Err(_) => Status::Unknown,
     }
 }
 
@@ -240,7 +287,7 @@ pub fn allow_all_button(cx: &App) -> Button {
     Button::new("allow-all")
         .primary()
         .label("Allow All")
-        .on_click(move |_, _, cx| permissions.update(cx, |p, cx| p.allow(&Permission::ALL, cx)))
+        .on_click(move |_, _, cx| permissions.update(cx, |p, cx| p.allow(&Permission::all().collect::<Vec<_>>(), cx)))
 }
 
 /// The permissions as a list, each with what it's for and a way to grant it.
@@ -248,7 +295,7 @@ pub fn render_list(cx: &App) -> impl IntoElement + use<> {
     let permissions = Permissions::global(cx);
     let state = permissions.read(cx);
     let theme = cx.theme();
-    let rows = Permission::ALL.into_iter().enumerate().map(|(ix, permission)| {
+    let rows = Permission::all().enumerate().map(|(ix, permission)| {
         let status = state.status(permission);
         let action = match status {
             Status::Granted => h_flex()

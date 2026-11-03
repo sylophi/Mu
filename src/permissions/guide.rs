@@ -28,7 +28,7 @@ use super::{Permission, Permissions, Watch};
 
 const WIDTH: f64 = 460.;
 const HEIGHT: f64 = 100.;
-/// Without Mu to drag, for Local Network, whose list Mu adds itself to.
+/// Without Mu to drag, for Local Network and iCloud Drive, whose lists Mu adds itself to.
 const SHORT_HEIGHT: f64 = 48.;
 /// From the window's right edge to the middle of the list, which sits right of the sidebar.
 const LIST_CENTER: f64 = 254.;
@@ -118,11 +118,12 @@ impl Panel {
 
     fn show(&self, permission: Permission) {
         let views = self.view.ivars();
-        let drag = permission != Permission::LocalNetwork;
-        let (arrow, text) = if drag {
-            ("arrow.up", format!("Drag Mu to the list above to allow {}", permission.name()))
-        } else {
-            ("arrow.down", "Scroll down to Local Network, then turn on Mu".into())
+        let (drag, arrow, text) = match permission {
+            Permission::LocalNetwork => (false, "arrow.down", "Scroll down to Local Network, then turn on Mu".into()),
+            Permission::ICloudDrive => {
+                (false, "arrow.up", "Open Mu in the list above, then turn on iCloud Drive".into())
+            }
+            _ => (true, "arrow.up", format!("Drag Mu to the list above to allow {}", permission.name())),
         };
         views.arrow.setImage(Some(&symbol_image(&NSString::from_str(arrow), ARROW_SIZE, unsafe { NSFontWeightBold })));
         views.title.setStringValue(&NSString::from_str(&text));

@@ -21,7 +21,7 @@ use super::{
 use crate::{
     fs::{self, Changes, Entry},
     icons,
-    permissions::Permissions,
+    permissions::{Permission, Permissions},
     places::Places,
     settings::Settings,
 };
@@ -362,8 +362,8 @@ impl Browser {
                 self.listing.items.clear();
                 self.fits = 0..usize::MAX;
                 // Privacy protection says EPERM, while plain file permissions say EACCES.
-                self.blocked =
-                    (error.raw_os_error() == Some(libc::EPERM)).then(|| Permissions::global(cx).read(cx).watch());
+                self.blocked = (error.raw_os_error() == Some(libc::EPERM))
+                    .then(|| (Permission::for_path(&self.path), Permissions::global(cx).read(cx).watch()));
                 self.error = Some(
                     match error.kind() {
                         io::ErrorKind::PermissionDenied => {
