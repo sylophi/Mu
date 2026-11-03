@@ -262,15 +262,17 @@ pub(super) fn confirm_discard(editors: Vec<Entity<FileEditor>>, window: &mut Win
         cx,
     );
     window.spawn(cx, async move |cx| match answer.await {
+        // One at a time, as a new file asks where it goes.
         Ok(0) => {
-            let saves = cx.update(|window, cx| {
-                editors.iter().map(|editor| editor.update(cx, |editor, cx| editor.save(window, cx))).collect::<Vec<_>>()
-            });
-            let mut saved = saves.is_ok();
-            for save in saves.into_iter().flatten() {
-                saved &= save.await;
+            for editor in editors {
+                let Ok(save) = cx.update(|window, cx| editor.update(cx, |editor, cx| editor.save(window, cx))) else {
+                    return false;
+                };
+                if !save.await {
+                    return false;
+                }
             }
-            saved
+            true
         }
         Ok(1) => true,
         _ => false,

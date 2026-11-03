@@ -1,5 +1,5 @@
-//! An editor tab for quick changes without leaving Mu: syntax highlighting, find (⌘F) and
-//! save (⌘S).
+//! An editor tab for quick changes without leaving Mu, or a new file: syntax highlighting, find
+//! (⌘F) and save (⌘S).
 
 use std::path::{Path, PathBuf};
 
@@ -11,7 +11,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use crate::{fs, theme::Toasts as _, workspace::TabEvent};
+use crate::{fs, session::Tab, theme::Toasts as _, workspace::TabEvent};
 
 gpui_kit::actions!(editor, [Save]);
 
@@ -23,8 +23,15 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-s", Save, Some(CONTEXT))]);
 }
 
+/// What an editor saves to.
+enum File {
+    At(PathBuf),
+    /// A new file, saved in this folder unless it's put somewhere else.
+    New(PathBuf),
+}
+
 pub struct FileEditor {
-    path: PathBuf,
+    file: File,
     state: Entity<EditorState>,
     error: Option<SharedString>,
     loading: bool,
@@ -39,28 +46,10 @@ impl EventEmitter<TabEvent> for FileEditor {}
 
 impl FileEditor {
     pub fn new(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language(language(&path))
-                .line_number(true)
-                .indent_guides(true)
-                .soft_wrap(false)
-                .tab_size(TabSize { tab_size: 4, hard_tabs: false })
-        });
-        let subscriptions = vec![
-            cx.subscribe(&state, |this, _, event, cx| {
-                if let InputEvent::Change = event {
-                    this.dirty = true;
-                }
-                cx.notify();
-            }),
-            cx.observe(&state, |_, _, cx| cx.notify()),
-        ];
-        let load = cx.background_spawn({
-            let path = path.clone();
-            async move { read_text(&path) }
-        });
-        let task = cx.spawn_in(window, async move |this, cx| {
+        let mut this = Self::blank(File::At(path.clone()), window, cx);
+        this.loading = true;
+        let load = cx.background_spawn(async move { read_text(&path) });
+        this._task = cx.spawn_in(window, async move |this, cx| {
             let text = load.await;
             this.update_in(cx, |this, window, cx| {
                 this.loading = false;
@@ -77,24 +66,66 @@ impl FileEditor {
             })
             .ok();
         });
+        this
+    }
+
+    /// An empty editor for a new file, saved in `dir` unless it's put somewhere else.
+    pub fn untitled(dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::blank(File::New(dir), window, cx)
+    }
+
+    fn blank(file: File, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let language = match &file {
+            File::At(path) => language(path),
+            File::New(_) => String::new(),
+        };
+        let state = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language(language)
+                .line_number(true)
+                .indent_guides(true)
+                .soft_wrap(false)
+                .tab_size(TabSize { tab_size: 4, hard_tabs: false })
+        });
+        let subscriptions = vec![
+            cx.subscribe(&state, |this, _, event, cx| {
+                if let InputEvent::Change = event {
+                    this.dirty = true;
+                }
+                cx.notify();
+            }),
+            cx.observe(&state, |_, _, cx| cx.notify()),
+        ];
         Self {
-            path,
+            file,
             state,
             error: None,
-            loading: true,
+            loading: false,
             line: None,
             dirty: false,
             _subscriptions: subscriptions,
-            _task: task,
+            _task: Task::ready(()),
         }
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Where it's saved, unless it's a new file.
+    pub fn path(&self) -> Option<&Path> {
+        match &self.file {
+            File::At(path) => Some(path),
+            File::New(_) => None,
+        }
+    }
+
+    /// The tab it is, to open it again.
+    pub fn saved(&self) -> Tab {
+        match &self.file {
+            File::At(path) => Tab::Editor(path.clone()),
+            File::New(dir) => Tab::Untitled(dir.clone()),
+        }
     }
 
     pub fn title(&self) -> SharedString {
-        fs::display_name(&self.path).into()
+        self.path().map_or("Untitled".into(), |path| fs::display_name(path).into())
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -129,9 +160,30 @@ impl FileEditor {
         if self.loading || self.error.is_some() {
             return Task::ready(false);
         }
+        match &self.file {
+            File::At(path) => self.write(path.clone(), window, cx),
+            File::New(dir) => {
+                let picked = cx.prompt_for_new_path(dir, Some("Untitled"));
+                cx.spawn_in(window, async move |this, cx| {
+                    let Ok(Ok(Some(path))) = picked.await else { return false };
+                    // It's that file from now on, highlighted as its name says.
+                    let write = this.update_in(cx, |this, window, cx| {
+                        this.state.update(cx, |state, cx| state.set_highlighter(language(&path), cx));
+                        this.file = File::At(path.clone());
+                        this.write(path, window, cx)
+                    });
+                    match write {
+                        Ok(write) => write.await,
+                        Err(_) => false,
+                    }
+                })
+            }
+        }
+    }
+
+    fn write(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
         let text = self.state.read(cx).value();
         let saved = text.clone();
-        let path = self.path.clone();
         let write = cx.background_spawn(async move {
             std::fs::write(&path, text.as_bytes())
                 .with_context(|| format!("Couldn't save “{}”", fs::display_name(&path)))

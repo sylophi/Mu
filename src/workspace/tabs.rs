@@ -18,7 +18,7 @@ use objc2_foundation::NSPoint;
 
 use super::{
     Item, Workspace,
-    actions::{FindInFolder, NewTab, NewTerminal, ShowHistory, ShowSettings, ShowThisMac},
+    actions::{FindInFolder, NewEditor, NewTab, NewTerminal, ShowHistory, ShowSettings, ShowThisMac},
     pane::paste_paths,
     parts::{action_button, close_button, menu_item, truncated},
     windows::{ns_window, open, workspaces},
@@ -229,6 +229,7 @@ impl Workspace {
         let new_tab = action_button("new-tab", IconName::Plus, "New Tab", NewTab);
         let buttons = [
             action_button("new-terminal", IconName::SquareTerminal, "New Terminal", NewTerminal),
+            action_button("new-editor", IconName::SquarePen, "New Editor", NewEditor),
             action_button("find-in-folder", IconName::FolderSearch, "Find in Folder", FindInFolder),
             action_button("this-mac", IconName::Laptop, "This Mac", ShowThisMac),
             action_button("undo-history", IconName::RotateCcwClock, "Undo History", ShowHistory),
@@ -318,7 +319,7 @@ impl Workspace {
                         }))
                     }
                     Item::Editor(editor) => {
-                        let path = editor.read(cx).path().to_path_buf();
+                        let Some(path) = editor.read(cx).path().map(PathBuf::from) else { return menu };
                         let reveal = vec![path.clone()];
                         menu.item(menu_item("Show in Files", &workspace, move |this, window, cx| {
                             this.reveal(reveal.clone(), window, cx)

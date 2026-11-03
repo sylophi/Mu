@@ -50,6 +50,7 @@ gpui_kit::actions!(
         NextTab,
         PrevTab,
         NewTerminal,
+        NewEditor,
         ToggleHidden,
         ViewAsGrid,
         ViewAsList,
@@ -130,6 +131,7 @@ pub(super) fn init(cx: &mut App) {
         KeyBinding::new("cmd-}", NextTab, ws),
         KeyBinding::new("cmd-{", PrevTab, ws),
         KeyBinding::new("ctrl-`", NewTerminal, ws),
+        KeyBinding::new("alt-cmd-n", NewEditor, ws),
         KeyBinding::new("cmd->", ToggleHidden, ws),
         KeyBinding::new("tab", ToggleView, Some("FileList && !renaming")),
         KeyBinding::new("backspace", GoBack, Some("FileList && !renaming")),
@@ -180,11 +182,13 @@ pub(super) fn init(cx: &mut App) {
         cx.activate(true);
     });
     cx.on_action(|_: &NewTerminal, cx| open_asked(vec![Tab::Terminal(front_dir(cx))], cx));
+    cx.on_action(|_: &NewEditor, cx| open_asked(vec![Tab::Untitled(front_dir(cx))], cx));
     cx.on_action(|_: &ShowActivity, cx| open_asked(vec![Tab::Activity], cx));
     cx.on_action(|_: &ShowThisMac, cx| open_asked(vec![Tab::ThisMac], cx));
     cx.set_dock_menu(vec![
         MenuItem::action("New Window", NewWindow),
         MenuItem::action("New Terminal", NewTerminal),
+        MenuItem::action("New Editor", NewEditor),
         MenuItem::separator(),
         MenuItem::action("Activity", ShowActivity),
         MenuItem::action("This Mac", ShowThisMac),
@@ -221,6 +225,7 @@ pub fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("New Tab", NewTab),
             MenuItem::action("New Folder", NewFolder),
             MenuItem::action("New Terminal", NewTerminal),
+            MenuItem::action("New Editor", NewEditor),
             MenuItem::separator(),
             MenuItem::action("Open", Open),
             MenuItem::action("Open in New Tab", OpenInNewTab),
@@ -355,6 +360,10 @@ impl Workspace {
         .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
             let dir = this.current_dir(cx);
             this.open_tab(Tab::Terminal(dir), window, cx);
+        }))
+        .on_action(cx.listener(|this, _: &NewEditor, window, cx| {
+            let dir = this.current_dir(cx);
+            this.open_tab(Tab::Untitled(dir), window, cx);
         }))
         .on_action(cx.listener(|this, _: &ToggleZoom, _, cx| this.toggle_zoom(cx)))
         .on_action(cx.listener(|this, _: &ShowActivity, window, cx| this.open_tab(Tab::Activity, window, cx)))
