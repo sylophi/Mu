@@ -158,7 +158,8 @@ impl Workspace {
                 }
                 cx.notify();
             }
-            TabEvent::OpenTab(path) => self.open_behind(path.clone(), window, cx),
+            TabEvent::OpenTab(path) => self.open_tab(Tab::Folder(path.clone()), window, cx),
+            TabEvent::OpenBehind(path) => self.open_behind(path.clone(), window, cx),
             TabEvent::OpenWindow(path) => open_window(path.clone(), cx),
             TabEvent::OpenTerminal(dir) => self.open_tab(Tab::Terminal(dir.clone()), window, cx),
             TabEvent::Uninstall(app) => self.open_tab(Tab::Uninstall(app.clone()), window, cx),

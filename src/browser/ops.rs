@@ -51,7 +51,7 @@ impl Browser {
                 let (folders, files): (Vec<_>, Vec<_>) =
                     targets.iter().map(|entry| (entry.folder, entry.target().to_path_buf())).partition(|(dir, _)| *dir);
                 for (_, folder) in folders {
-                    cx.emit(TabEvent::OpenTab(folder));
+                    cx.emit(TabEvent::OpenBehind(folder));
                 }
                 self.open_files(files.into_iter().map(|(_, file)| file).collect(), targets.len() > 1, window, cx);
             }
@@ -87,7 +87,7 @@ impl Browser {
         cx.spawn_in(window, async move |this, cx| {
             let volume = mount.await;
             this.update_in(cx, |this, window, cx| match volume {
-                Ok(volume) if tab => cx.emit(TabEvent::OpenTab(volume)),
+                Ok(volume) if tab => cx.emit(TabEvent::OpenBehind(volume)),
                 Ok(volume) => this.navigate(volume, window, cx),
                 Err(error) => window.toast_error(&error, cx),
             })

@@ -64,8 +64,10 @@ pub enum TabEvent {
     /// What the window shows of it changed: its title, as a search's does with its query, or an
     /// editor's mark for unsaved changes and its cursor in the status bar.
     Changed,
-    /// Opens a folder in a tab behind this one.
+    /// Opens a folder in a new tab and shows it.
     OpenTab(PathBuf),
+    /// Opens a folder in a tab behind this one.
+    OpenBehind(PathBuf),
     /// Opens a folder in a window of its own.
     OpenWindow(PathBuf),
     OpenTerminal(PathBuf),

@@ -12,6 +12,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use super::Workspace;
+use crate::session::Tab;
 
 /// A row in a list, like the sidebar's places or the path bar's suggestions.
 pub(super) fn row(id: impl Into<ElementId>, theme: &Theme) -> Stateful<Div> {
@@ -67,8 +68,8 @@ pub(super) fn close_button(
         })
 }
 
-/// Has `element` show the folder at `path` when it's clicked, or open it in a tab behind the active
-/// one with ⌘ or a middle click, as places in the sidebar and the path bar do.
+/// Has `element` show the folder at `path` when it's clicked, open it in a new tab with ⌘, or in a
+/// tab behind the active one with a middle click, as places in the sidebar and the path bar do.
 pub(super) fn opens_folder(element: Stateful<Div>, path: PathBuf, cx: &Context<Workspace>) -> Stateful<Div> {
     let (pressed, clicked) = (path.clone(), path.clone());
     element
@@ -84,7 +85,7 @@ pub(super) fn opens_folder(element: Stateful<Div>, path: PathBuf, cx: &Context<W
         .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
             cx.stop_propagation();
             match event.modifiers().platform {
-                true => this.open_behind(clicked.clone(), window, cx),
+                true => this.open_tab(Tab::Folder(clicked.clone()), window, cx),
                 false => this.show_folder(clicked.clone(), window, cx),
             }
         }))

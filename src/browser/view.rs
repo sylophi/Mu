@@ -568,7 +568,7 @@ impl Browser {
                     MouseButton::Middle,
                     cx.listener({
                         let into = into.clone();
-                        move |_, _, _, cx| cx.emit(TabEvent::OpenTab(into.clone()))
+                        move |_, _, _, cx| cx.emit(TabEvent::OpenBehind(into.clone()))
                     }),
                 )
             })
