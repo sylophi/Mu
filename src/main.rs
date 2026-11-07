@@ -28,6 +28,7 @@ mod settings;
 mod shelf;
 mod theme;
 mod thumbnails;
+mod underway;
 mod update;
 mod workspace;
 
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
         theme::init(cx);
         history::init(cx);
         operations::init(cx);
+        underway::init(cx);
         shelf::init(cx);
         mac::init(cx);
         activity::monitor::init(cx);

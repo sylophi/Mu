@@ -39,6 +39,7 @@ use crate::{
     session::Tab,
     settings::Settings,
     shelf,
+    underway::Underway,
     update::{RestartToUpdate, Updater},
 };
 use actions::ShowSettings;
@@ -141,6 +142,7 @@ impl Workspace {
             cx.observe_global::<network::Servers>(|_, cx| cx.notify()),
             cx.observe_global::<Places>(|_, cx| cx.notify()),
             cx.observe(&Updater::global(cx), |_, _, cx| cx.notify()),
+            cx.observe(&Underway::global(cx), |_, _, cx| cx.notify()),
             cx.observe(&Permissions::global(cx), |this, _, cx| {
                 this.onboard(cx);
                 cx.notify();

@@ -24,12 +24,14 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use crate::{
     drag::DropFiles as _,
+    fs::underway::Direction,
     fs::{self, Entry},
     permissions::{self, Permission, Permissions, Status},
     places::Places,
     quicklook,
     settings::Settings,
     thumbnails::Cache,
+    underway::{Stopped, Underway, Watch},
     workspace::{
         TabEvent,
         actions::{SHIFTED_DIGITS, ShowPlace},
@@ -76,6 +78,8 @@ gpui_kit::actions!(
         Paste,
         Duplicate,
         Compress,
+        DownloadNow,
+        RemoveDownload,
         NewFolder,
         CopyPath,
         QuickLook,
@@ -182,8 +186,12 @@ pub struct Browser {
     _watch: Task<()>,
     /// Watches the folders expanded in the listing along with it.
     _watch_expanded: Task<()>,
+    /// Hears what's being copied, downloaded or uploaded in the folders it shows.
+    underway: Option<Watch>,
+    /// Whether anything it shows was underway as of the last time that changed anywhere.
+    busy: bool,
     _settings: Subscription,
-    _in_window: [Subscription; 3],
+    _in_window: [Subscription; 5],
 }
 
 impl EventEmitter<TabEvent> for Browser {}
@@ -226,6 +234,8 @@ impl Browser {
             _load: Task::ready(()),
             _watch: Task::ready(()),
             _watch_expanded: Task::ready(()),
+            underway: None,
+            busy: false,
             _settings: cx.observe_global::<Settings>(|this, cx| this.update_visible(cx)),
             _in_window: Self::observe_in_window(window, cx),
         };
@@ -337,7 +347,7 @@ impl Browser {
     }
 
     /// What it keeps up with in the window it's in.
-    fn observe_in_window(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 3] {
+    fn observe_in_window(window: &mut Window, cx: &mut Context<Self>) -> [Subscription; 5] {
         [
             // Opens the folder as soon as the permission it's missing is switched on.
             cx.observe_in(&Permissions::global(cx), window, |this, permissions, window, cx| {
@@ -362,6 +372,23 @@ impl Browser {
                         this.watch(listing::watcher(this.trash_dirs.clone(), cx), window, cx);
                         this.load(window, cx);
                     }
+                }
+            }),
+            // Drawn again as what's underway in it goes along, and once more as it stops.
+            cx.observe_in(&Underway::global(cx), window, |this, underway, _, cx| {
+                let busy = this.underway.as_ref().is_some_and(|watch| underway.read(cx).any_for(watch));
+                if busy || this.busy {
+                    cx.notify();
+                }
+                this.busy = busy;
+            }),
+            // An upload that's done changes nothing the folder's watcher sees, but it's in sync now.
+            cx.subscribe_in(&Underway::global(cx), window, |this, _, Stopped(transfer), window, cx| {
+                let watched = this.underway.as_ref().map_or(&[][..], |watch| watch.dirs());
+                if transfer.direction == Direction::Upload
+                    && transfer.path.parent().is_some_and(|dir| watched.iter().any(|watched| watched == dir))
+                {
+                    this.load(window, cx);
                 }
             }),
         ]
@@ -461,6 +488,8 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &Paste, window, cx| this.paste(window, cx)))
             .on_action(cx.listener(|this, _: &Duplicate, window, cx| this.duplicate(window, cx)))
             .on_action(cx.listener(|this, _: &Compress, window, cx| this.compress(window, cx)))
+            .on_action(cx.listener(|this, _: &DownloadNow, window, cx| this.download_now(window, cx)))
+            .on_action(cx.listener(|this, _: &RemoveDownload, window, cx| this.remove_download(window, cx)))
             .on_action(cx.listener(|this, _: &NewFolder, window, cx| this.new_folder(window, cx)))
             .on_action(cx.listener(|this, _: &CopyPath, _, cx| this.copy_path(cx)))
             .on_action(cx.listener(|this, _: &AddToSidebar, _, cx| this.add_to_sidebar(cx)))

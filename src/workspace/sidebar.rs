@@ -2,6 +2,7 @@
 
 use std::{
     cell::Cell,
+    collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
@@ -35,6 +36,7 @@ use crate::{
     settings::Settings,
     shelf,
     theme::Toasts as _,
+    underway::{self, Underway},
 };
 
 /// The sidebar, drawn again when the workspace changes, rather than on every frame the folder view
@@ -133,6 +135,26 @@ fn heading(title: &'static str, button: Option<Button>, theme: &Theme) -> Div {
         .text_color(theme.muted_foreground)
         .child(title)
         .children(button)
+}
+
+/// How far what's underway in each place has got, all together, while that's known. What's
+/// underway shows on the innermost place it's in, like Downloads rather than the disk it's on.
+fn underway_by_place(places: &[Vec<(SharedString, PathBuf, Place)>], cx: &App) -> HashMap<PathBuf, Option<f64>> {
+    let mut bytes: HashMap<&Path, Option<(u64, u64)>> = HashMap::new();
+    for transfer in Underway::global(cx).read(cx).all() {
+        let place = places
+            .iter()
+            .flatten()
+            .filter(|(_, path, place)| *place != Place::Trash && transfer.path.starts_with(path))
+            .max_by_key(|(_, path, _)| path.components().count());
+        let Some((_, path, _)) = place else { continue };
+        let sum = bytes.entry(path).or_insert(Some((0, 0)));
+        *sum = sum.zip(transfer.bytes()).map(|((a, b), (c, d))| (a + c, b + d));
+    }
+    bytes
+        .into_iter()
+        .map(|(path, bytes)| (path.to_path_buf(), bytes.map(|(done, total)| done as f64 / total as f64)))
+        .collect()
 }
 
 /// Asks, then deletes everything in the Trash for good.
@@ -263,14 +285,17 @@ impl Workspace {
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current = self.last_folder.as_ref().map(|browser| browser.read(cx).path().to_path_buf());
-        let [favorites, icloud, locations] = self.places(cx);
+        let places = self.places(cx);
+        let underway = underway_by_place(&places, cx);
+        let [favorites, icloud, locations] = places;
         let section = |title: &'static str, items: Vec<(SharedString, PathBuf, Place)>, cx: &mut Context<Self>| {
             v_flex()
                 .gap_px()
                 .child(div().px_2().pb_1().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(title))
                 .children(items.into_iter().map(|(name, path, place)| {
                     let active = current.as_ref() == Some(&path);
-                    self.render_place(name, path, place, active, cx)
+                    let underway = underway.get(&path).copied();
+                    self.render_place(name, path, place, active, underway, cx)
                 }))
         };
         let favorites = Self::track_favorite_drop(section("Favorites", favorites, cx), None, cx);
@@ -465,6 +490,7 @@ impl Workspace {
         path: PathBuf,
         place: Place,
         active: bool,
+        underway: Option<Option<f64>>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let theme = cx.theme();
@@ -498,6 +524,7 @@ impl Workspace {
             .child(icons::item(&path, true, PLACE_ICON))
             .child(truncated(name).flex_1())
             .children(count.map(|count| div().text_xs().text_color(theme.muted_foreground).child(count.to_string())))
+            .children(underway.map(|done| underway::pie(done, theme.muted_foreground)))
             .when(ejectable, |el| {
                 el.child(Button::new("eject").ghost().xsmall().icon(IconName::Eject).tooltip("Eject").on_click(
                     cx.listener({
