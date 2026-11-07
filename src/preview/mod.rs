@@ -4,16 +4,17 @@
 
 mod details;
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
-use gpui_kit::component::{ActiveTheme as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, Theme, button::Button, h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::{
     browser::Browser,
-    fs::{self, Category, Entry},
+    fs::{self, Category, Entry, underway::Transfer},
     icons,
     thumbnails::Cache,
+    underway::{self, Underway},
 };
 use details::Details;
 
@@ -58,14 +59,25 @@ pub struct Preview {
     scroll: UniformListScrollHandle,
     /// Whether the pane is shown. While it's hidden, there's no reading files.
     shown: bool,
+    /// Whether something was underway for it when last drawn.
+    underway: bool,
     _load: Task<()>,
     _details: Task<()>,
     _in_use_by: Task<()>,
+    _underway: Subscription,
 }
 
 impl Preview {
     pub fn new(shown: bool, cx: &mut Context<Self>) -> Self {
         cx.on_release(|this, cx| this.pictures.clear(None, cx)).detach();
+        // Drawn again as what's underway for it goes along, and once more when it stops.
+        let underway = cx.observe(&Underway::global(cx), |this: &mut Self, underway, cx| {
+            let now = this.target.as_ref().is_some_and(|entry| underway.read(cx).get(&entry.path).is_some());
+            let was = std::mem::replace(&mut this.underway, now);
+            if now || was {
+                cx.notify();
+            }
+        });
         Self {
             browser: None,
             target: None,
@@ -78,6 +90,8 @@ impl Preview {
             _load: Task::ready(()),
             _details: Task::ready(()),
             _in_use_by: Task::ready(()),
+            underway: false,
+            _underway: underway,
         }
     }
 
@@ -249,14 +263,8 @@ impl Render for Preview {
             Content::Folder(_) | Content::Icon => icon(),
             Content::None => div().size_full().into_any_element(),
         };
-        // Values wrap, so a long one, like a lens's model, shows in full.
-        let detail = |label: &'static str, value: String| {
-            h_flex()
-                .items_start()
-                .gap_2()
-                .child(div().w(px(80.)).flex_none().text_color(theme.muted_foreground).child(label))
-                .child(div().min_w_0().child(value))
-        };
+        let detail = |label, value| detail(label, value, theme);
+        let transfer = Underway::global(cx).read(cx).get(&entry.path);
         let size = match &self.content {
             Content::Folder(count) => Some(fs::count(*count, "item", "items")),
             _ if entry.folder || entry.package => None,
@@ -274,6 +282,8 @@ impl Render for Preview {
                 .border_t_1()
                 .border_color(theme.border)
                 .child(div().pb_1().font_medium().child(entry.name.clone()))
+                .children(transfer.map(|transfer| render_transfer(&transfer, theme)))
+                .children(entry.unsynced.as_ref().map(|unsynced| detail("iCloud", unsynced.describe())))
                 .child(detail("Kind", entry.kind.to_string()))
                 .children(size.map(|size| detail("Size", size)))
                 .children(self.details.about.iter().map(|(label, value)| detail(label, value.clone())))
@@ -284,4 +294,32 @@ impl Render for Preview {
                 .child(detail("Where", entry.path.parent().map(|p| p.display().to_string()).unwrap_or_default())),
         )
     }
+}
+
+/// What's underway for the item: how far it's got, how fast it's going and how long it has left,
+/// who's doing it, and a way to stop it.
+fn render_transfer(transfer: &Rc<Transfer>, theme: &Theme) -> impl IntoElement + use<> {
+    let detail = |label, value| detail(label, value, theme);
+    let stop = transfer.can_stop().then(|| {
+        let transfer = transfer.clone();
+        Button::new("stop-transfer").small().label("Stop").on_click(move |_, _, _| transfer.stop())
+    });
+    v_flex()
+        .gap_1()
+        .pb_2()
+        .child(div().py_1().child(underway::bar("transfer", transfer.fraction())))
+        .child(detail(underway::verb(transfer.direction), underway::amount(transfer).unwrap_or_default()))
+        .children(transfer.speed().map(|speed| detail("Speed", underway::speed(speed))))
+        .children(transfer.time_left().map(|left| detail("Time left", format!("About {}", underway::duration(left)))))
+        .children(transfer.by.map(|by| detail("By", by.to_string())))
+        .children(stop.map(|stop| div().pt_1().child(stop)))
+}
+
+/// A detail's label and value. Values wrap, so a long one, like a lens's model, shows in full.
+fn detail(label: &'static str, value: String, theme: &Theme) -> Div {
+    h_flex()
+        .items_start()
+        .gap_2()
+        .child(div().w(px(80.)).flex_none().text_color(theme.muted_foreground).child(label))
+        .child(div().min_w_0().child(value))
 }

@@ -24,6 +24,7 @@ use crate::{
     permissions::{Permission, Permissions},
     places::Places,
     settings::Settings,
+    underway::Underway,
 };
 
 /// How long going to a folder waits for its listing. Most folders list in a millisecond or two, so
@@ -313,6 +314,7 @@ impl Browser {
     /// Keeps up with the folder through `changes`, from its watcher.
     pub(super) fn watch(&mut self, changes: Changes, window: &mut Window, cx: &mut Context<Self>) {
         self._watch = Self::keep_up(changes, window, cx);
+        self.watch_underway(cx);
     }
 
     /// Keeps up with the folders expanded in the listing too, whose changes count as its own.
@@ -322,6 +324,16 @@ impl Browser {
             true => Task::ready(()),
             false => Self::keep_up(watcher(expanded, cx), window, cx),
         };
+        self.watch_underway(cx);
+    }
+
+    /// Hears what's underway in the folders it shows, the expanded ones too.
+    fn watch_underway(&mut self, cx: &mut Context<Self>) {
+        let mut dirs = shown_dirs(&self.path, cx);
+        dirs.extend(self.listing.expanded());
+        if self.underway.as_ref().is_none_or(|watch| watch.dirs() != dirs) {
+            self.underway = Some(Underway::global(cx).read(cx).watch(dirs));
+        }
     }
 
     /// Loads the folder again whenever `changes` has one, until the task is dropped.
@@ -643,6 +655,7 @@ pub(super) mod tests {
             custom_icon: false,
             locked: false,
             cloud_only: false,
+            unsynced: None,
             hidden: name.starts_with('.'),
             size: 0,
             modified: None,

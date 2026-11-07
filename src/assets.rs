@@ -15,6 +15,8 @@ gpui_kit::assets::icon_assets!(
         ClipboardPaste,
         Cloud,
         CloudDownload,
+        CloudOff,
+        CloudUpload,
         Columns2,
         CopyPlus,
         Download,

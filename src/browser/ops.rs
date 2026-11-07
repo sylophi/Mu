@@ -8,7 +8,7 @@ use gpui_kit::*;
 use super::Browser;
 use crate::{
     drag,
-    fs::{self, Category, Done, Entry, Progress},
+    fs::{self, Category, Done, Entry, Progress, icloud},
     history::{self, Op},
     operations, pasteboard,
     settings::Settings,
@@ -314,6 +314,46 @@ impl Browser {
     pub(super) fn new_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.path.clone();
         self.run(Op::NewFolder, move |_| fs::new_folder(&dir), true, window, cx).detach();
+    }
+
+    /// Has iCloud download what's selected that's only in iCloud.
+    pub(super) fn download_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.selected_icloud(true);
+        self.ask_icloud(move || icloud::download(&paths), window, cx);
+    }
+
+    /// Has iCloud let go of what's downloaded of what's selected, which stays in iCloud.
+    pub(super) fn remove_download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.selected_icloud(false);
+        self.ask_icloud(move || icloud::remove_download(&paths), window, cx);
+    }
+
+    /// What's selected that iCloud keeps, either only in iCloud, or downloaded and in sync.
+    pub(super) fn selected_icloud(&self, cloud_only: bool) -> Vec<PathBuf> {
+        let entries = self.selected_entries().into_iter();
+        let kept = entries.filter(|entry| {
+            icloud::contains(&entry.path) && entry.cloud_only == cloud_only && (cloud_only || entry.unsynced.is_none())
+        });
+        kept.map(|entry| entry.path.clone()).collect()
+    }
+
+    /// Asks iCloud with `ask`, off the main thread, then shows how things stand.
+    fn ask_icloud(
+        &mut self,
+        ask: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.background_spawn(async move { ask() });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => this.load(window, cx),
+                Err(error) => window.toast_error(&error, cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(super) fn copy_path(&mut self, cx: &mut Context<Self>) {
