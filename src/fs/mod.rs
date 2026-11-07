@@ -4,12 +4,14 @@
 pub mod admin;
 mod apps;
 mod archives;
+pub mod icloud;
 mod kinds;
 mod listing;
 mod merge;
 mod names;
 mod ops;
 mod trash;
+pub mod underway;
 mod undo;
 mod using;
 mod volumes;

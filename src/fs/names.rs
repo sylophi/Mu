@@ -121,7 +121,7 @@ pub fn trash_dir() -> PathBuf {
 }
 
 pub fn icloud_drive() -> PathBuf {
-    home_dir().join("Library/Mobile Documents/com~apple~CloudDocs")
+    super::icloud::root().join("com~apple~CloudDocs")
 }
 
 #[cfg(test)]

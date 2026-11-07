@@ -43,7 +43,7 @@ impl Step {
     fn run(self) -> Result<()> {
         match self {
             Step::Rename(from, to) => fs::rename(from, to)?,
-            Step::Copy(from, to) => files::copyfile(&from, &to, &Progress::default())?,
+            Step::Copy(from, to) => files::copyfile(&from, &to, &Progress::default(), None)?,
             Step::MakeFolder(path) => fs::create_dir_all(path)?,
             Step::Write(path, bytes) => File::create_new(path)?.write_all(&bytes)?,
             Step::Delete(path) => files::remove_all(&path)?,

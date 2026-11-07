@@ -3,7 +3,14 @@
 use std::{cell::OnceCell, collections::HashSet, ops::Range, path::PathBuf, rc::Rc, sync::Arc};
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, input::Input, scroll::Scrollbar, v_flex};
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::Input,
+    scroll::Scrollbar,
+    v_flex,
+};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{
@@ -14,9 +21,10 @@ use super::{
 };
 use crate::{
     drag::{self, DragFiles as _, DropFiles as _},
-    fs::{self, Entry},
+    fs::{self, Entry, icloud::Unsynced, underway::Transfer},
     icons,
     settings::{COLUMN_WIDTHS, Settings},
+    underway::{self, Underway},
     workspace::TabEvent,
 };
 
@@ -32,8 +40,8 @@ pub(super) const TILE_TOP: Pixels = px(8.);
 pub(super) const TILE_ICON: Pixels = px(56.);
 /// How far a tile's icon and name are in from its edges.
 const TILE_PADDING: Pixels = px(4.);
-/// The cloud mark after a name, and the gap before it.
-const CLOUD_MARK: Pixels = px(14.);
+/// What an item's parts look to for the pointer being on it.
+const ITEM: &str = "item";
 pub(super) const ROW_ICON: Pixels = px(16.);
 /// How far a row in an expanded folder is in from the folder's.
 const INDENT: Pixels = px(20.);
@@ -76,12 +84,24 @@ struct Batch<'a> {
     cut: Option<&'a HashSet<PathBuf>>,
     /// The selection's paths, for dragging, worked out the first time a selected item needs them.
     selected_paths: OnceCell<Rc<Vec<PathBuf>>>,
+    underway: &'a Underway,
 }
 
 impl Batch<'_> {
     /// Hidden files and cut ones show faded.
     fn dimmed(&self, entry: &Entry) -> bool {
         entry.hidden || self.cut.is_some_and(|cut| cut.contains(&entry.path))
+    }
+
+    fn activity(&self, entry: &Entry) -> Option<Activity> {
+        if let Some(transfer) = self.underway.get(&entry.path) {
+            return Some(Activity::Underway(transfer));
+        }
+        if let Some(unsynced) = &entry.unsynced {
+            return Some(Activity::Unsynced(unsynced.clone()));
+        }
+        let inside = if entry.folder { self.underway.inside(&entry.path) } else { Vec::new() };
+        (!inside.is_empty()).then_some(Activity::Inside(inside))
     }
 }
 
@@ -382,6 +402,7 @@ impl Browser {
             tile_width,
             cut: CutFiles::current(cx),
             selected_paths: OnceCell::new(),
+            underway: Underway::global(cx).read(cx),
         }
     }
 
@@ -446,9 +467,16 @@ impl Browser {
 
     fn render_row(&self, ix: usize, batch: &Batch, cx: &Context<Self>) -> Stateful<Div> {
         let (entry, key) = (&self.listing[ix], self.listing.key(ix));
-        let icon = icons::entry(entry, ROW_ICON);
+        let activity = batch.activity(entry);
+        let icon = match &activity {
+            Some(Activity::Underway(transfer)) => {
+                underway::filling(|| icons::entry(entry, ROW_ICON).into_any_element(), ROW_ICON, transfer.fraction())
+            }
+            _ => icons::entry(entry, ROW_ICON),
+        };
         let dimmed = batch.dimmed(entry);
-        let muted = cx.theme().muted_foreground;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
         let [name_width, modified_width, size_width, kind_width] = batch.widths;
         let cell = |width: Pixels| div().w(width).flex_none().px_2().truncate().text_color(muted);
         let rename = self.rename.as_ref().filter(|rename| &rename.key == key);
@@ -457,12 +485,27 @@ impl Browser {
             // Cut in the middle, so a long name keeps its end, like "…0012.jpeg".
             None => el
                 .child(div().min_w_0().truncate().text_ellipsis_middle().child(one_line(&entry.name)))
-                .children(cloud_mark(entry, cx)),
+                .children(mark(entry, activity.as_ref(), cx)),
+        });
+        // While something's underway for it, or something keeps it out of sync, that's what's new
+        // about it, and how much is done is its size so far.
+        let (modified, color) = match status(entry, activity.as_ref(), false, cx) {
+            Some((status, color)) => (Some(status), color),
+            None => (entry.modified.map(fs::format_date), muted),
+        };
+        let size = match &activity {
+            Some(Activity::Underway(transfer)) => transfer.bytes().map(|(done, _)| fs::format_size(done)),
+            _ => None,
+        };
+        let size = size.unwrap_or_else(|| match entry.folder || entry.package {
+            true => "—".to_string(),
+            false => fs::format_size(entry.size),
         });
         self.item(h_flex().id(ElementId::Name(key.clone())), ix, batch, cx)
             .h(ROW_HEIGHT)
             .w(batch.row_width)
             .text_sm()
+            .children(landed(entry, batch, cx))
             .child(
                 h_flex().w(name_width).flex_none().px_2().pl(px(8.) + INDENT * self.listing.depth(ix) as f32).child(
                     self.grip(h_flex().id("grip").min_w_0().gap_2(), ix, batch, cx)
@@ -471,12 +514,8 @@ impl Browser {
                         .child(name),
                 ),
             )
-            .child(cell(modified_width).children(entry.modified.map(fs::format_date)))
-            .child(cell(size_width).text_right().child(if entry.folder || entry.package {
-                "—".to_string()
-            } else {
-                fs::format_size(entry.size)
-            }))
+            .child(cell(modified_width).text_color(color).children(modified))
+            .child(cell(size_width).text_right().child(size))
             .child(cell(kind_width).child(entry.kind.clone()))
     }
 
@@ -491,11 +530,16 @@ impl Browser {
     ) -> Stateful<Div> {
         let entry = &self.listing[ix];
         let (icon, width) = (batch.tile_icon, batch.tile_width);
-        // Inside the tile's padding, less the cloud mark beside the name.
-        let room = width - TILE_PADDING * 2. - if entry.cloud_only { CLOUD_MARK } else { Pixels::ZERO };
-        let (first, rest) = tile_name(one_line(&entry.name), room, wrapper);
+        let activity = batch.activity(entry);
+        let theme = cx.theme();
+        // Under the name, in place of its second line.
+        let status = status(entry, activity.as_ref(), true, cx);
+        let (first, rest) = match status {
+            Some(_) => (one_line(&entry.name), None),
+            None => tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper),
+        };
         let dimmed = batch.dimmed(entry);
-        let picture = match thumbnail {
+        let picture = || match thumbnail.clone() {
             // Fitted in a square, or the picture's own shape would stretch the tile. A badge goes on
             // the picture's corner.
             Some(thumbnail) => {
@@ -513,28 +557,41 @@ impl Browser {
             // What it has no picture of, or not yet, shows its icon.
             None => icons::entry(entry, icon).into_any_element(),
         };
+        let picture = match &activity {
+            Some(Activity::Underway(transfer)) => div()
+                .relative()
+                .child(underway::filling(picture, icon, transfer.fraction()))
+                .children(stop(transfer, cx).map(|stop| stop.absolute().top_0().right_0()))
+                .into_any_element(),
+            _ => picture(),
+        };
         let tile = self.item(v_flex().id(ElementId::Name(self.listing.key(ix).clone())), ix, batch, cx);
         self.grip(tile, ix, batch, cx)
             .w(width)
             .p(TILE_PADDING)
             .gap_1()
             .items_center()
-            .rounded(cx.theme().radius)
+            .rounded(theme.radius)
             .text_xs()
+            .children(landed(entry, batch, cx))
             .child(div().when(dimmed, |el| el.opacity(0.5)).child(picture))
             .child(div().w_full().when(dimmed, |el| el.opacity(0.6)).map(|el| {
                 match self.rename.as_ref().filter(|rename| &rename.key == self.listing.key(ix)) {
                     Some(rename) => el.child(self.render_rename(rename, cx)),
-                    None => el
-                        .flex()
-                        .justify_center()
-                        .gap_0p5()
-                        .child(
-                            v_flex().min_w_0().items_center().child(div().whitespace_nowrap().child(first)).children(
-                                rest.map(|rest| div().max_w_full().truncate().text_ellipsis_middle().child(rest)),
-                            ),
-                        )
-                        .children(cloud_mark(entry, cx)),
+                    None => el.flex().justify_center().child(
+                        v_flex()
+                            .min_w_0()
+                            .max_w_full()
+                            .items_center()
+                            .map(|el| match status {
+                                Some(_) => el.child(div().max_w_full().truncate().text_ellipsis_middle().child(first)),
+                                None => el.child(div().whitespace_nowrap().child(first)),
+                            })
+                            .children(rest.map(|rest| div().max_w_full().truncate().text_ellipsis_middle().child(rest)))
+                            .children(status.map(|(status, color)| {
+                                div().max_w_full().truncate().text_size(px(10.)).text_color(color).child(status)
+                            })),
+                    ),
                 }
             }))
     }
@@ -556,7 +613,9 @@ impl Browser {
         let selected = self.selection.contains(key);
         let is_cursor = self.selection.cursor.as_ref() == Some(key);
         let (path, into) = (entry.path.clone(), entry.target().to_path_buf());
-        el.border_1()
+        el.group(ITEM)
+            .relative()
+            .border_1()
             .border_color(transparent_black())
             .when(selected, |el| el.bg(batch.selected_tint))
             // The outline marks the end of a selection that the arrows move, so it goes once the
@@ -600,11 +659,91 @@ impl Browser {
     }
 }
 
-/// The mark after the name of what's only in iCloud, as in Finder.
-fn cloud_mark(entry: &Entry, cx: &App) -> Option<Icon> {
-    entry
-        .cloud_only
-        .then(|| Icon::new(IconName::CloudDownload).xsmall().flex_none().text_color(cx.theme().muted_foreground))
+/// What's going on with an item past what it is, as the listing shows it.
+enum Activity {
+    Underway(Rc<Transfer>),
+    Unsynced(Unsynced),
+    /// It's a folder with things underway inside it.
+    Inside(Vec<Rc<Transfer>>),
+}
+
+/// What's going on with an item, and the color to say it in: in full, like "Downloading, 2 min
+/// left", or `short`, like "↓ 40%", for under a tile's name.
+fn status(entry: &Entry, activity: Option<&Activity>, short: bool, cx: &App) -> Option<(String, Hsla)> {
+    let theme = cx.theme();
+    match activity {
+        Some(Activity::Underway(transfer)) if short => Some((underway::progress(transfer), theme.muted_foreground)),
+        Some(Activity::Underway(transfer)) => Some((underway::status(transfer), theme.foreground)),
+        Some(Activity::Unsynced(Unsynced::Waiting)) => Some((Unsynced::Waiting.describe(), theme.muted_foreground)),
+        Some(Activity::Unsynced(unsynced)) => Some((unsynced.describe(), theme.warning)),
+        Some(Activity::Inside(inside)) => Some((underway::summary(inside), theme.muted_foreground)),
+        None if short && entry.cloud_only => Some(("In iCloud".into(), theme.muted_foreground)),
+        None => None,
+    }
+}
+
+/// The mark after an item's name: whether it's only in iCloud or isn't in sync with it, or if
+/// something's underway inside a folder. For what's underway for the item itself, the icon fills
+/// in instead, and the mark is a way to stop it.
+fn mark(entry: &Entry, activity: Option<&Activity>, cx: &App) -> Option<AnyElement> {
+    let theme = cx.theme();
+    let icon = |name: IconName, color: Hsla| Icon::new(name).xsmall().flex_none().text_color(color).into_any_element();
+    match activity {
+        Some(Activity::Underway(transfer)) => stop(transfer, cx).map(IntoElement::into_any_element),
+        Some(Activity::Unsynced(Unsynced::Waiting)) => Some(icon(IconName::CloudUpload, theme.muted_foreground)),
+        Some(Activity::Unsynced(_)) => Some(icon(IconName::TriangleAlert, theme.warning)),
+        Some(Activity::Inside(_)) => {
+            Some(div().flex_none().size(px(5.)).mx_1().rounded_full().bg(theme.muted_foreground).into_any_element())
+        }
+        None => entry.cloud_only.then(|| icon(IconName::CloudDownload, theme.muted_foreground)),
+    }
+}
+
+/// A way to stop what's underway, which shows while the pointer is on the item, if it can be
+/// stopped.
+fn stop(transfer: &Rc<Transfer>, cx: &App) -> Option<Div> {
+    if !transfer.can_stop() {
+        return None;
+    }
+    let transfer = transfer.clone();
+    let verb = underway::verb(transfer.direction).to_lowercase();
+    let tooltip = match transfer.by {
+        Some(by) => format!("Stop {verb} in {by}"),
+        None => format!("Stop {verb}"),
+    };
+    let button = Button::new("stop")
+        .ghost()
+        .xsmall()
+        .icon(Icon::new(IconName::CircleX).text_color(cx.theme().muted_foreground))
+        .tooltip(tooltip)
+        .on_click(move |_, _, _| transfer.stop());
+    // Not picking up the item.
+    Some(
+        div()
+            .flex_none()
+            .invisible()
+            .group_hover(ITEM, |style| style.visible())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(button),
+    )
+}
+
+/// A flash over an item that's just landed, fading out.
+fn landed(entry: &Entry, batch: &Batch, cx: &App) -> Option<AnyElement> {
+    if !batch.underway.landed(&entry.path) {
+        return None;
+    }
+    let (color, radius) = (cx.theme().success, cx.theme().radius);
+    let flash = div().absolute().inset_0().rounded(radius);
+    Some(
+        flash
+            .with_animation(
+                "landed",
+                Animation::new(underway::LANDED).with_easing(ease_out_quint()),
+                move |el, delta| el.bg(color.opacity(0.3 * (1. - delta))),
+            )
+            .into_any_element(),
+    )
 }
 
 /// A tile's name as Finder's grid has it: as much as fits on the first line, then the rest on the

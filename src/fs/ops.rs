@@ -17,6 +17,7 @@ use super::{
     Done,
     admin::{self, Step},
     c_path, display_name,
+    underway::Published,
 };
 
 /// `name` in `dir`, or when that's taken, a free name in "name copy.ext" style when `copy`,
@@ -122,7 +123,8 @@ impl std::error::Error for Cancelled {}
 /// what it made of `to`.
 pub(super) fn copy_path(from: &Path, to: &Path, progress: &Progress) -> Result<()> {
     progress.check()?;
-    let Err(error) = copyfile(from, to, progress) else { return Ok(()) };
+    let published = Published::copying(to, size(from));
+    let Err(error) = copyfile(from, to, progress, Some(&published)) else { return Ok(()) };
     if progress.check().is_err() {
         let _ = remove_all(to);
         return Err(Cancelled.into());
@@ -142,15 +144,15 @@ pub(super) fn copy_path(from: &Path, to: &Path, progress: &Progress) -> Result<(
 }
 
 /// Copies with the system's `copyfile`, which clones on APFS and keeps metadata, like Finder, and
-/// counts what it writes in `progress`.
-pub fn copyfile(from: &Path, to: &Path, progress: &Progress) -> io::Result<()> {
+/// counts what it writes in `progress`, and in `item` for what it's copying.
+pub fn copyfile(from: &Path, to: &Path, progress: &Progress, item: Option<&Published>) -> io::Result<()> {
     let (from_c, to_c) = (c_path(from)?, c_path(to)?);
     let flags = libc::COPYFILE_METADATA
         | libc::COPYFILE_DATA
         | libc::COPYFILE_RECURSIVE
         | libc::COPYFILE_CLONE
         | libc::COPYFILE_NOFOLLOW_SRC;
-    let tracker = Tracker { progress, file: Default::default() };
+    let tracker = Tracker { progress, file: Default::default(), item: item.map(|item| (item, progress.bytes().0)) };
     let state = unsafe { libc::copyfile_state_alloc() };
     let callback: CopyCallback = copy_status;
     let (result, error) = unsafe {
@@ -177,10 +179,12 @@ pub(super) fn delete_path(path: &Path) -> Result<()> {
 
 type CopyCallback = extern "C" fn(i32, i32, libc::copyfile_state_t, *const i8, *const i8, *mut c_void) -> i32;
 
-/// What `copy_status` needs: where to count, and how much of the current file it has counted.
+/// What `copy_status` needs: where to count, and how much of the current file it has counted. And
+/// the item it's copying, with what had been copied before it.
 struct Tracker<'a> {
     progress: &'a Progress,
     file: std::cell::Cell<u64>,
+    item: Option<(&'a Published, u64)>,
 }
 
 /// Hears from `copyfile` as it goes: counts the bytes it writes, and stops it at the first error, as
@@ -195,7 +199,11 @@ extern "C" fn copy_status(
 ) -> i32 {
     let tracker = unsafe { &*context.cast::<Tracker>() };
     let count = |bytes: u64| {
-        tracker.progress.copied.fetch_add(bytes.saturating_sub(tracker.file.replace(bytes)), Relaxed);
+        let added = bytes.saturating_sub(tracker.file.replace(bytes));
+        let copied = tracker.progress.copied.fetch_add(added, Relaxed) + added;
+        if let Some((item, before)) = tracker.item {
+            item.set_copied(copied - before);
+        }
     };
     match (what, stage) {
         (_, libc::COPYFILE_ERR) => return libc::COPYFILE_QUIT,

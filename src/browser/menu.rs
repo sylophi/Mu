@@ -10,9 +10,9 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{
-    AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, Duplicate, NewFolder, Open, OpenInEditor, OpenInNewTab,
-    OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, Rename, ShowPackageContents, Trash, Uninstall,
-    listing::SortKey,
+    AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, DownloadNow, Duplicate, NewFolder, Open, OpenInEditor,
+    OpenInNewTab, OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, RemoveDownload, Rename,
+    ShowPackageContents, Trash, Uninstall, listing::SortKey,
 };
 use crate::{
     fs::{self, Entry},
@@ -67,6 +67,8 @@ impl Browser {
         let single_dir = single && selected[0].folder;
         let package = single && selected[0].package;
         let app = this.can_uninstall();
+        let (download, remove_download) =
+            (!this.selected_icloud(true).is_empty(), !this.selected_icloud(false).is_empty());
         let menu = menu
             .when(in_trash, |menu| {
                 menu.menu_with_icon_and_disabled("Put Back", IconName::Undo2, Box::new(PutBack), !known).separator()
@@ -115,6 +117,15 @@ impl Browser {
             menu.menu_with_icon("Open in Editor", IconName::SquarePen, Box::new(OpenInEditor))
         })
         .menu_with_icon("Quick Look", IconName::Eye, Box::new(QuickLook))
+        .when(download || remove_download, |menu| {
+            menu.separator()
+                .when(download, |menu| {
+                    menu.menu_with_icon("Download Now", IconName::CloudDownload, Box::new(DownloadNow))
+                })
+                .when(remove_download, |menu| {
+                    menu.menu_with_icon("Remove Download", IconName::CloudOff, Box::new(RemoveDownload))
+                })
+        })
         .separator()
         .menu_with_icon("Copy", IconName::Copy, Box::new(Copy))
         .menu_with_icon("Cut", IconName::Scissors, Box::new(Cut))

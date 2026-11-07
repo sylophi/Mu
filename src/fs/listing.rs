@@ -15,7 +15,7 @@ use std::{
 use gpui_kit::{BackgroundExecutor, SharedString};
 use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
 
-use super::{Category, alias_target, describe, extension, is_package};
+use super::{Category, alias_target, describe, extension, icloud, is_package};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -38,6 +38,8 @@ pub struct Entry {
     pub locked: bool,
     /// What's in it is in iCloud and not downloaded, and reading it downloads it.
     pub cloud_only: bool,
+    /// What keeps it from being in sync with iCloud, when iCloud keeps it.
+    pub unsynced: Option<icloud::Unsynced>,
     pub hidden: bool,
     pub size: u64,
     pub modified: Option<SystemTime>,
@@ -73,6 +75,11 @@ pub fn list_dir(dir: &Path) -> io::Result<Vec<Entry>> {
     };
     let mut entries = Vec::new();
     bulk(dir, request, 0, |record| entries.extend(entry(dir, record)))?;
+    if icloud::contains(dir) {
+        for entry in &mut entries {
+            entry.unsynced = icloud::unsynced(&entry.path);
+        }
+    }
     Ok(entries)
 }
 
@@ -271,6 +278,7 @@ fn entry(dir: &Path, bytes: &[u8]) -> Option<Entry> {
         custom_icon: !is_link && finder_info[8] & 0x04 != 0,
         locked: flags & libc::UF_IMMUTABLE != 0,
         cloud_only: flags & SF_DATALESS != 0,
+        unsynced: None,
         // Apps are folders too, and a folder's own size is just its list of names.
         size: if is_dir { 0 } else { size },
         modified,
