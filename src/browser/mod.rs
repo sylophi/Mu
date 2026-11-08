@@ -9,6 +9,7 @@ mod selection;
 mod view;
 
 use std::{
+    collections::HashSet,
     ops::Range,
     path::{Path, PathBuf},
     time::Instant,
@@ -182,6 +183,11 @@ pub struct Browser {
     spots: Vec<Point<Pixels>>,
     /// The Trashes as `Places` last had them, to tell when disks change them.
     trash_dirs: Vec<PathBuf>,
+    /// The apps' folders as `Places` last had them, to tell when iCloud changes them.
+    app_folders: Vec<PathBuf>,
+    /// The folders listed with something in them that's only in iCloud, as far as it's been found.
+    cloud_inside: HashSet<PathBuf>,
+    _check_cloud: Task<()>,
     _load: Task<()>,
     _watch: Task<()>,
     /// Watches the folders expanded in the listing along with it.
@@ -231,6 +237,9 @@ impl Browser {
             layout: None,
             spots: Vec::new(),
             trash_dirs: cx.global::<Places>().trash_dirs.clone(),
+            app_folders: cx.global::<Places>().app_folders.clone(),
+            cloud_inside: HashSet::new(),
+            _check_cloud: Task::ready(()),
             _load: Task::ready(()),
             _watch: Task::ready(()),
             _watch_expanded: Task::ready(()),
@@ -288,7 +297,7 @@ impl Browser {
     /// Shows `paths`, which are all in one folder, selected there.
     pub fn reveal(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(first) = paths.first() else { return };
-        let Some(parent) = first.parent().map(|parent| shown(parent.to_path_buf(), cx)) else {
+        let Some(parent) = fs::icloud::enclosing(first).map(|parent| shown(parent, cx)) else {
             return self.navigate(first.clone(), window, cx);
         };
         if parent == self.path {
@@ -325,8 +334,8 @@ impl Browser {
     }
 
     pub fn go_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(parent) = self.path.parent() {
-            self.navigate(parent.to_path_buf(), window, cx);
+        if let Some(parent) = fs::icloud::enclosing(&self.path) {
+            self.navigate(parent, window, cx);
         }
     }
 
@@ -361,15 +370,16 @@ impl Browser {
                 }
                 this.prefetch_cursor(window, cx);
             }),
-            // The Trash shows each disk's, which come and go with the disks.
+            // The Trash shows each disk's, which come and go with the disks, and iCloud Drive the
+            // apps' folders, which come and go with iCloud.
             cx.observe_global_in::<Places>(window, |this, window, cx| {
-                let dirs = &cx.global::<Places>().trash_dirs;
-                if *dirs != this.trash_dirs {
-                    this.trash_dirs = dirs.clone();
-                    // It may have got the Trash ready to open, as it was.
+                let places = cx.global::<Places>();
+                if places.trash_dirs != this.trash_dirs || places.app_folders != this.app_folders {
+                    (this.trash_dirs, this.app_folders) = (places.trash_dirs.clone(), places.app_folders.clone());
+                    // It may have got either ready to open, as it was.
                     this.prefetch = None;
-                    if this.in_trash() {
-                        this.watch(listing::watcher(this.trash_dirs.clone(), cx), window, cx);
+                    if this.in_trash() || this.path == fs::icloud_drive() {
+                        this.watch(listing::watcher(listing::shown_dirs(&this.path, cx), cx), window, cx);
                         this.load(window, cx);
                     }
                 }

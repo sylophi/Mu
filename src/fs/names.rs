@@ -9,7 +9,9 @@ use std::{
 };
 
 use objc2::rc::autoreleasepool;
-use objc2_foundation::{NSFileManager, ns_string};
+use objc2_foundation::{NSFileManager, NSString, ns_string};
+
+use super::icloud;
 
 /// Case-insensitive comparison that orders digit runs by value, so "file2" sorts before "file10".
 pub fn natural_cmp(mut a: &str, mut b: &str) -> Ordering {
@@ -79,11 +81,15 @@ pub fn format_date(time: SystemTime) -> String {
     }
 }
 
-/// The name Finder shows for `path`: its file name, the startup disk's for `/`, or the Trash's.
+/// The name Finder shows for `path`: its file name, the startup disk's for `/`, the Trash's, or the
+/// app's for its folder in iCloud Drive.
 pub fn display_name(path: &Path) -> String {
     match path.file_name() {
         Some(name) if name == ".Trash" && path == trash_dir() => "Trash".into(),
         Some(name) if name == "com~apple~CloudDocs" && path == icloud_drive() => "iCloud Drive".into(),
+        Some(name) if name == icloud::APP_FOLDER && icloud::is_app_folder(path) => autoreleasepool(|_| {
+            NSFileManager::defaultManager().displayNameAtPath(&NSString::from_str(&path.to_string_lossy())).to_string()
+        }),
         Some(name) => name.to_string_lossy().into_owned(),
         None => STARTUP_DISK.clone(),
     }
@@ -98,12 +104,17 @@ pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// A path as it's shown: as it's typed, but with iCloud Drive by name.
+/// A path as it's shown: as it's typed, but with iCloud Drive and the apps' folders in it by name.
 pub fn shown_path(path: &Path) -> String {
-    match path.strip_prefix(icloud_drive()) {
-        Ok(rest) => Path::new("iCloud Drive").join(rest).display().to_string().trim_end_matches('/').into(),
-        Err(_) => typed_path(path),
-    }
+    let drive = Path::new("iCloud Drive");
+    let shown = if let Some(app) = icloud::app_folder(path) {
+        drive.join(display_name(&app)).join(path.strip_prefix(&app).unwrap_or(path))
+    } else if let Ok(rest) = path.strip_prefix(icloud_drive()) {
+        drive.join(rest)
+    } else {
+        return typed_path(path);
+    };
+    shown.display().to_string().trim_end_matches('/').into()
 }
 
 /// A path as it's typed, with the home folder written as `~`.

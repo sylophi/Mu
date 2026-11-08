@@ -14,18 +14,19 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+use block2::RcBlock;
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::{prelude::FluentBuilder as _, *};
 use image::Frame;
 use objc2::{
     AnyThread as _, msg_send,
     rc::{Retained, autoreleasepool},
-    runtime::{AnyClass, AnyObject},
+    runtime::{AnyClass, AnyObject, Bool},
 };
 use objc2_app_kit::{NSGraphicsContext, NSImage, NSImageNameTrashEmpty, NSImageNameTrashFull, NSWorkspace};
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_core_graphics::CGContext;
-use objc2_foundation::NSString;
+use objc2_foundation::{NSRect, NSSize, NSString};
 use objc2_uniform_type_identifiers::{UTType, UTTypeData, UTTypeFolder, UTTypeUnixExecutable};
 
 use crate::{
@@ -282,6 +283,7 @@ fn ns_image(of: &Of) -> Option<Retained<NSImage>> {
         }
         // A link shows what it leads to. Its badge goes on separately, so it can go on pictures too.
         Of::Path(path) => {
+            let app = fs::icloud::app_folder_icon(path);
             let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
             // Asked of IconServices, the way Finder asks, as AppKit's own ways draw a folder with
             // things in it without the sheet of paper Finder shows in it.
@@ -289,7 +291,23 @@ fn ns_image(of: &Of) -> Option<Retained<NSImage>> {
             let icon: Option<Retained<AnyObject>> =
                 unsafe { msg_send![factory, _iconForURL: &*crate::fs::file_url(&path)] };
             let image: Option<Retained<NSImage>> = unsafe { msg_send![NSImage::alloc(), initWithISIcon: &*icon?] };
-            image?
+            match app {
+                Some(app) => on_folder(image?, &app)?,
+                None => image?,
+            }
         }
     })
+}
+
+/// `folder` with the app's icon from `icon` on it, as Finder shows an app's folder in iCloud Drive,
+/// which macOS doesn't draw for anyone else.
+fn on_folder(folder: Retained<NSImage>, icon: &Path) -> Option<Retained<NSImage>> {
+    let icon = NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&icon.to_string_lossy()))?;
+    let draw = RcBlock::new(move |bounds: NSRect| {
+        folder.drawInRect(bounds);
+        let (side, inset) = (bounds.size.width * 0.52, bounds.size.width * 0.24);
+        icon.drawInRect(CGRect::new(CGPoint::new(inset, inset), CGSize::new(side, side)));
+        Bool::YES
+    });
+    Some(NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(256., 256.), false, &draw))
 }
