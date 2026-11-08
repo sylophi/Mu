@@ -16,7 +16,13 @@ use objc2_foundation::{
     NSData, NSDictionary, NSNumber, NSPropertyListMutabilityOptions, NSPropertyListSerialization, NSString, ns_string,
 };
 
-use crate::{fs::volume_root, thumbnails};
+use crate::{
+    fs::{
+        ds_store::{be32, records},
+        volume_root,
+    },
+    thumbnails,
+};
 
 pub struct Layout {
     /// The picture, drawn for the screen.
@@ -93,83 +99,6 @@ impl Layout {
         let origin = point(at.x - width / 2., at.y - self.icon_size / 2. - px(5.));
         Bounds::new(origin, size(width, self.icon_size + self.text_size * 3. + px(14.)))
     }
-}
-
-/// A record in a .DS_Store: who it's for (an item's name, or "." for the folder), which one it is,
-/// and its value's bytes.
-type Record<'a> = (String, [u8; 4], &'a [u8]);
-
-fn records(data: &[u8]) -> Option<Vec<Record<'_>>> {
-    // Where things are counts from after the first 4 bytes.
-    let data = data.get(4..)?;
-    if data.get(..4)? != b"Bud1" {
-        return None;
-    }
-    // The allocator's own block: where each block is, then which block holds what.
-    let root = be32(data, 4)?;
-    let count = be32(data, root)?;
-    let blocks: Vec<usize> = (0..count).map(|ix| be32(data, root + 8 + 4 * ix)).collect::<Option<_>>()?;
-    let mut at = root + 8 + 4 * count.div_ceil(256) * 256;
-    let mut directory = None;
-    for _ in 0..be32(data, at)? {
-        let length = *data.get(at + 4)? as usize;
-        if data.get(at + 5..at + 5 + length)? == b"DSDB" {
-            directory = Some(be32(data, at + 5 + length)?);
-        }
-        at += 5 + length;
-    }
-    let tree = *blocks.get(directory?)? & !0x1f;
-    let mut records = Vec::new();
-    node(data, &blocks, be32(data, tree)?, be32(data, tree + 4)?, &mut records)?;
-    Some(records)
-}
-
-/// Reads the records in node `id` of the tree and in the nodes below it, `levels` deep.
-fn node<'a>(data: &'a [u8], blocks: &[usize], id: usize, levels: usize, records: &mut Vec<Record<'a>>) -> Option<()> {
-    let mut at = *blocks.get(id)? & !0x1f;
-    // A node with nodes below it says so with the last of them, which follows its records.
-    let (last, count) = (be32(data, at)?, be32(data, at + 4)?);
-    let below = last != 0 && levels > 1;
-    at += 8;
-    for _ in 0..count {
-        if below {
-            node(data, blocks, be32(data, at)?, levels - 1, records)?;
-            at += 4;
-        }
-        let length = be32(data, at)? * 2;
-        let name: Vec<u16> = data
-            .get(at + 4..at + 4 + length)?
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&pair| u16::from_be_bytes(pair))
-            .collect();
-        at += 4 + length;
-        let code = data.get(at..at + 4)?.try_into().ok()?;
-        let kind = data.get(at + 4..at + 8)?;
-        at += 8;
-        let length = match kind {
-            b"bool" => 1,
-            b"long" | b"shor" | b"type" => 4,
-            b"comp" | b"dutc" => 8,
-            // Blobs and strings say how long they are first, strings in UTF-16 units.
-            b"blob" | b"ustr" => {
-                at += 4;
-                be32(data, at - 4)? * if kind == b"ustr" { 2 } else { 1 }
-            }
-            _ => return None,
-        };
-        records.push((String::from_utf16_lossy(&name), code, data.get(at..at + length)?));
-        at += length;
-    }
-    if below {
-        node(data, blocks, last, levels - 1, records)?;
-    }
-    Some(())
-}
-
-fn be32(data: &[u8], at: usize) -> Option<usize> {
-    Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?) as usize)
 }
 
 /// Where an alias leads, from the root of its volume.
