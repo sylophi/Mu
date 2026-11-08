@@ -138,8 +138,10 @@ impl Workspace {
 
     /// Takes in a tab from another window at `ix`, and shows it, with the window in front.
     fn receive(&mut self, ix: usize, item: Item, window: &mut Window, cx: &mut Context<Self>) {
-        if let Item::Folder(browser) = &item {
-            browser.update(cx, |browser, cx| browser.moved(window, cx));
+        match &item {
+            Item::Folder(browser) => browser.update(cx, |browser, cx| browser.moved(window, cx)),
+            Item::Editor(editor) => editor.update(cx, |editor, cx| editor.moved(window, cx)),
+            _ => {}
         }
         self.insert_item(ix, item, window, cx);
         self.activate(ix, window, cx);

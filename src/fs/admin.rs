@@ -32,6 +32,9 @@ pub enum Step {
     MakeFolder(PathBuf),
     /// Makes a file with these bytes in it.
     Write(PathBuf, Vec<u8>),
+    /// Puts these bytes in a file, as saving it does. It stays the same file, with its owner and
+    /// permissions, or is made if it isn't there.
+    Save(PathBuf, Vec<u8>),
     Delete(PathBuf),
     /// Moves an item into the Trash (from, to), noting where it came from.
     Trash(PathBuf, PathBuf),
@@ -46,6 +49,7 @@ impl Step {
             Step::Copy(from, to) => files::copyfile(&from, &to, &Progress::default(), None)?,
             Step::MakeFolder(path) => fs::create_dir_all(path)?,
             Step::Write(path, bytes) => File::create_new(path)?.write_all(&bytes)?,
+            Step::Save(path, bytes) => fs::write(path, bytes)?,
             Step::Delete(path) => files::remove_all(&path)?,
             Step::Trash(from, to) => {
                 fs::rename(&from, &to)?;
@@ -237,5 +241,9 @@ mod tests {
         // What fails says why, and the next step still goes.
         let error = admin.ask(&Step::Write(at("a/b/note.txt"), Vec::new())).unwrap_err();
         assert_eq!(error.to_string(), "File exists (os error 17)");
+        admin.ask(&Step::Save(at("a/b/note.txt"), b"bye".to_vec())).unwrap();
+        assert_eq!(fs::read(at("a/b/note.txt")).unwrap(), b"bye");
+        admin.ask(&Step::Save(at("a/new.txt"), b"new".to_vec())).unwrap();
+        assert_eq!(fs::read(at("a/new.txt")).unwrap(), b"new");
     }
 }

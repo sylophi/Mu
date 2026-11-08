@@ -41,7 +41,7 @@ pub use names::{
     count, display_name, format_date, format_size, home_dir, icloud_drive, listed, natural_cmp, shown_path, trash_dir,
     typed_path,
 };
-pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};
+pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename, save};
 pub use trash::{Origins, empty_trash, is_locked, is_restricted, put_back, set_origin, trash, trash_dirs, trash_items};
 pub use undo::{Done, Undo};
 pub use using::{Holder, holders, names, running_in};
