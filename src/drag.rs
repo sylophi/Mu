@@ -18,7 +18,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 use crate::{
-    fs::{self, Done},
+    fs::{self, Done, icloud},
     history::Op,
     icons, operations,
 };
@@ -67,7 +67,13 @@ pub fn drop_into(paths: &[PathBuf], target: PathBuf, window: &mut Window, cx: &m
     } else {
         Op::Move
     };
-    operations::transfer(op, paths.to_vec(), target, window, cx)
+    // The apps' folders in iCloud Drive stay where iCloud keeps them.
+    let paths: Vec<PathBuf> =
+        paths.iter().filter(|path| matches!(op, Op::Copy) || !icloud::is_app_folder(path)).cloned().collect();
+    if paths.is_empty() {
+        return Task::ready(None);
+    }
+    operations::transfer(op, paths, target, window, cx)
 }
 
 /// Elements that files are dragged from, to drop in Mu or in other apps.

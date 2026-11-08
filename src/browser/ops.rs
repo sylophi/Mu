@@ -228,9 +228,16 @@ impl Browser {
         self.path == fs::trash_dir()
     }
 
+    /// What's selected, less the apps' folders in iCloud Drive, which stay where iCloud keeps them.
+    fn changeable_paths(&self) -> Vec<PathBuf> {
+        let mut paths = self.selected_paths();
+        paths.retain(|path| !icloud::is_app_folder(path));
+        paths
+    }
+
     /// Moves the selection to the Trash, or in the Trash, puts it back like Finder.
     pub fn trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected_paths();
+        let paths = self.changeable_paths();
         if paths.is_empty() {
             return;
         }
@@ -259,7 +266,7 @@ impl Browser {
     }
 
     pub(super) fn copy(&mut self, cut: bool, cx: &mut Context<Self>) {
-        let paths = self.selected_paths();
+        let paths = if cut { self.changeable_paths() } else { self.selected_paths() };
         if paths.is_empty() {
             return;
         }
@@ -297,14 +304,14 @@ impl Browser {
     }
 
     pub(super) fn duplicate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected_paths();
+        let paths = self.changeable_paths();
         if !paths.is_empty() {
             self.run(Op::Duplicate, move |progress| fs::duplicate(&paths, progress), false, window, cx).detach();
         }
     }
 
     pub(super) fn compress(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = self.selected_paths();
+        let paths = self.changeable_paths();
         if !paths.is_empty() {
             let dir = folder_of(&paths);
             self.run(Op::Compress, move |_| fs::compress(&paths, &dir), false, window, cx).detach();
@@ -382,6 +389,9 @@ impl Browser {
     pub(super) fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.cursor_ix() else { return };
         let entry = &self.listing[ix];
+        if icloud::is_app_folder(&entry.path) {
+            return;
+        }
         let (name, path) = (entry.name.clone(), entry.path.clone());
         let stem_len = match name.rsplit_once('.') {
             Some((stem, _)) if !stem.is_empty() && !entry.folder => stem.len(),

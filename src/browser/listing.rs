@@ -3,7 +3,7 @@
 use std::{
     cmp::Ordering,
     collections::HashMap,
-    io,
+    io, iter,
     ops::{Index, Range},
     os::unix::ffi::OsStrExt as _,
     path::{Path, PathBuf},
@@ -30,6 +30,10 @@ use crate::{
 /// How long going to a folder waits for its listing. Most folders list in a millisecond or two, so
 /// they show up in the very next frame, without a frame of the folder that was there before.
 const LISTING_WAIT: Duration = Duration::from_millis(20);
+
+/// How long changes deep in iCloud's folders have to stop for before what's only in iCloud is
+/// looked for again, as they come in a stream while it syncs.
+const CLOUD_SETTLE: Duration = Duration::from_secs(2);
 
 /// What the listing is sorted by, one for each of the list's columns.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -205,7 +209,12 @@ impl Browser {
         cx.background_spawn(async move {
             let layout = Layout::read(&path, scale);
             // Sorted here, so sorting it again on the main thread only checks the order.
-            let listing = fs::read_dirs(&dirs, fs::list_dir).map(|entries| match layout {
+            let in_drive = path == fs::icloud_drive();
+            let read = |dir: &Path| match in_drive && dir != path {
+                true => fs::icloud::app_folder_item(dir),
+                false => fs::list_dir(dir),
+            };
+            let listing = fs::read_dirs(&dirs, read).map(|entries| match layout {
                 // A folder Finder lays out shows as Finder has it, whatever the room.
                 Some(_) => (expand(entries, &path, 0, show_hidden, sort, descending).0, 0..usize::MAX),
                 None => expand(entries, &path, room, show_hidden, sort, descending),
@@ -343,6 +352,8 @@ impl Browser {
                 let update = this.update_in(cx, |this, window, cx| {
                     if changed.items {
                         this.load(window, cx);
+                    } else if changed.deep {
+                        this.check_cloud(CLOUD_SETTLE, cx);
                     }
                     // Like a folder given a new icon in Finder, or an app updated.
                     icons::refresh(&changed.paths, cx);
@@ -405,6 +416,7 @@ impl Browser {
         }
         // Keeps the selection to what shows.
         self.sort_entries(cx);
+        self.check_cloud(Duration::ZERO, cx);
         if selecting && let Some(ix) = self.cursor_ix() {
             self.scroll_to(ix, ScrollStrategy::Center, cx);
             if after.rename {
@@ -412,6 +424,35 @@ impl Browser {
             }
         }
         cx.notify();
+    }
+
+    /// Finds which folders listed have something in them that's only in iCloud, after `wait`, in
+    /// the background as a folder can be big. What's known stays until then, so the marks don't
+    /// blink, and the next look replaces this one.
+    fn check_cloud(&mut self, wait: Duration, cx: &mut Context<Self>) {
+        let in_icloud = fs::icloud::contains(&self.path);
+        let folders: Vec<PathBuf> = (self.listing.items.iter().map(|item| &item.entry))
+            .filter(|entry| in_icloud && entry.folder && !entry.is_link && !entry.cloud_only)
+            .map(|entry| entry.path.clone())
+            .collect();
+        self._check_cloud = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            for folder in folders {
+                let holds = cx.background_spawn(fs::holds_cloud_only(folder.clone())).await;
+                let update = this.update(cx, |this, cx| {
+                    let changed = match holds {
+                        true => this.cloud_inside.insert(folder),
+                        false => this.cloud_inside.remove(&folder),
+                    };
+                    if changed {
+                        cx.notify();
+                    }
+                });
+                if update.is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     fn sort_entries(&mut self, cx: &mut Context<Self>) {
@@ -484,11 +525,16 @@ pub(super) fn watcher(paths: Vec<PathBuf>, cx: &App) -> Changes {
     fs::watch(paths, true, Duration::from_millis(120), cx.background_executor())
 }
 
-/// The folders whose items show at `path`: each disk's Trash in the Trash, or else just it.
+/// The folders that show at `path`: each disk's Trash in the Trash, iCloud Drive and the apps'
+/// folders in iCloud Drive, or else just it.
 pub(super) fn shown_dirs(path: &Path, cx: &App) -> Vec<PathBuf> {
-    match *path == fs::trash_dir() {
-        true => cx.global::<Places>().trash_dirs.clone(),
-        false => vec![path.to_path_buf()],
+    let places = cx.global::<Places>();
+    if *path == fs::trash_dir() {
+        places.trash_dirs.clone()
+    } else if *path == fs::icloud_drive() {
+        iter::once(path.to_path_buf()).chain(places.app_folders.iter().cloned()).collect()
+    } else {
+        vec![path.to_path_buf()]
     }
 }
 
