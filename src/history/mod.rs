@@ -1,5 +1,6 @@
-//! Undo and redo for file operations: one history for every window, like Finder's. Undoing never
-//! deletes anything: what an operation made goes to the Trash, and redoing puts it back from there.
+//! Undo and redo for file operations: one history for every window, like Finder's. What an
+//! operation made goes to the Trash when it's undone, and redoing puts it back from there. On a
+//! volume without a Trash, undoing warns and deletes it instead, which can't be redone.
 //! Besides the latest change, any change can be taken back on its own, from the Undo History tab.
 //! The latest changes are saved as JSON in Application Support after every one, so quitting doesn't
 //! lose them.
@@ -107,6 +108,11 @@ impl Change {
         Self { id, op, detail, place, time: SystemTime::now(), undone: false, action: undo, touched }
     }
 
+    /// Whether undoing it deleted its items for good, so there's nothing to redo.
+    pub fn gone(&self) -> bool {
+        self.action == Undo::Gone
+    }
+
     /// Where its items are now.
     pub fn current(&self) -> Vec<PathBuf> {
         items(&self.action).into_iter().map(|(now, _)| now.to_path_buf()).collect()
@@ -128,6 +134,7 @@ fn footprint(undo: &Undo) -> Vec<PathBuf> {
         Undo::Trash(made) => made.clone(),
         Undo::All(steps) => steps.iter().flat_map(footprint).collect(),
         Undo::Aside(step) => footprint(step),
+        Undo::Gone => Vec::new(),
     }
 }
 
@@ -140,7 +147,7 @@ fn items(undo: &Undo) -> Vec<(&Path, &Path)> {
         }
         Undo::Trash(made) => made.iter().map(|path| (path.as_path(), path.as_path())).collect(),
         Undo::All(steps) => steps.iter().flat_map(items).collect(),
-        Undo::Aside(_) => Vec::new(),
+        Undo::Aside(_) | Undo::Gone => Vec::new(),
     }
 }
 
@@ -289,13 +296,23 @@ pub fn toggle(id: usize, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>
     if history.running.is_some() {
         return Task::ready(Vec::new());
     }
-    let Some(change) = history.get(id) else { return Task::ready(Vec::new()) };
+    let Some(change) = history.get(id).filter(|change| !change.gone()) else { return Task::ready(Vec::new()) };
     let (op, redo, action) = (change.op, change.undone, change.action.clone());
     history.running = Some(id);
     let verb = if redo { "Redoing" } else { "Undoing" };
-    let task = operations::track(verb, move |progress| action.apply(progress), cx);
     let window = window.window_handle();
     cx.spawn(async move |cx| {
+        // Finding out can mean waiting for a share.
+        let doomed = cx.background_executor().spawn({
+            let action = action.clone();
+            async move { action.doomed() }
+        });
+        let doomed = doomed.await;
+        if !doomed.is_empty() && !operations::confirm_delete(&doomed, window, cx).await {
+            cx.update(|cx| cx.global_mut::<History>().running = None);
+            return Vec::new();
+        }
+        let task = cx.update(|cx| operations::track(verb, move |progress| action.apply(progress), cx));
         let mut done = task.await;
         let toggled = cx.update(|cx| {
             let history = cx.global_mut::<History>();
@@ -316,7 +333,7 @@ pub fn toggle(id: usize, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>
             }
             if toggled && redo {
                 history.redo.retain(|&undone| undone != id);
-            } else if toggled && history.next_id() == next {
+            } else if toggled && history.next_id() == next && !history.get(id).is_some_and(Change::gone) {
                 // A change made in the meantime would have left nothing to redo, this included.
                 history.redo.push(id);
             }
@@ -340,14 +357,19 @@ pub fn toggle(id: usize, window: &mut Window, cx: &mut App) -> Task<Vec<PathBuf>
 /// Shows `message` with a button that undoes change `id`, or with `redo`, redoes it. The button
 /// does nothing once the change has been taken back (or done again) some other way.
 fn toast(message: String, redo: bool, id: usize, window: &mut Window, cx: &mut App) {
-    let note = Notification::new().message(message).id::<Toast>().action(move |_, _, _| {
-        Button::new("take-back").label(if redo { "Redo" } else { "Undo" }).on_click(move |_, window, cx| {
-            if change(id, cx).is_some_and(|change| change.undone == redo) {
-                toggle(id, window, cx).detach();
-            }
+    let note = Notification::new().message(message).id::<Toast>().autohide(true);
+    let note = if change(id, cx).is_some_and(Change::gone) {
+        note
+    } else {
+        note.action(move |_, _, _| {
+            Button::new("take-back").label(if redo { "Redo" } else { "Undo" }).on_click(move |_, window, cx| {
+                if change(id, cx).is_some_and(|change| change.undone == redo) {
+                    toggle(id, window, cx).detach();
+                }
+            })
         })
-    });
-    window.toast(note.autohide(true), cx);
+    };
+    window.toast(note, cx);
 }
 
 #[cfg(test)]

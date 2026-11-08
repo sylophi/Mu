@@ -4,6 +4,7 @@
 pub mod admin;
 mod apps;
 mod archives;
+pub mod ds_store;
 pub mod icloud;
 mod kinds;
 mod listing;
@@ -40,8 +41,8 @@ pub use names::{
 };
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};
 pub use trash::{
-    delete, empty_trash, is_locked, is_restricted, origin, put_back, set_origin, split_by_trash, trash, trash_dirs,
-    trash_items,
+    Origins, delete, empty_trash, is_locked, is_restricted, put_back, set_origin, split_by_trash, trash_dirs,
+    trash_items, trash_or_delete,
 };
 pub use undo::{Done, Undo};
 pub use using::{Holder, holders, names, running_in};
@@ -50,7 +51,7 @@ pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, sam
 use apps::alias_target;
 use kinds::describe;
 use ops::{copy_path, delete_path, disk_name, each, move_path, unique_path};
-use trash::{clear_origin, trash_one};
+use trash::{clear_origin, delete_one, lacks_trash, trash_one};
 use volumes::{holds_volume, is_network, is_read_only};
 
 pub fn c_path(path: &Path) -> io::Result<CString> {

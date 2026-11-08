@@ -133,15 +133,16 @@ pub fn trash_after(
 ) -> Task<Option<Done>> {
     window.spawn(cx, async move |cx| {
         // Finding out can mean waiting for a share.
-        let (trashable, doomed, locked) = cx
+        let (paths, doomed, locked) = cx
             .background_executor()
             .spawn(async move {
-                let (trashable, doomed) = fs::split_by_trash(paths);
-                let locked: Vec<_> = trashable.iter().filter(|path| fs::is_locked(path)).cloned().collect();
-                (trashable, doomed, locked)
+                let (trashable, doomed) = fs::split_by_trash(paths.clone());
+                let locked: Vec<_> = trashable.into_iter().filter(|path| fs::is_locked(path)).collect();
+                (paths, doomed, locked)
             })
             .await;
-        if !doomed.is_empty() && !confirm_delete(&doomed, cx).await {
+        let handle = cx.window_handle();
+        if !doomed.is_empty() && !confirm_delete(&doomed, handle, cx).await {
             return None;
         }
         let question = match locked.as_slice() {
@@ -152,20 +153,12 @@ pub fn trash_after(
             }
         };
         if let Some(question) = question
-            && !confirm(&question, None, "Move to Trash", cx).await
+            && !confirm(&question, None, "Move to Trash", handle, cx).await
         {
             return None;
         }
         let work = move |_: &Progress| match first() {
-            Ok(()) => {
-                let trashed = fs::trash(&trashable);
-                // Turned down an administrator's password: nothing more goes, least of all for good.
-                if trashed.error.as_ref().is_some_and(|error| error.is::<fs::Cancelled>()) {
-                    return trashed;
-                }
-                let deleted = fs::delete(&doomed);
-                Done { error: trashed.error.or(deleted.error), ..trashed }
-            }
+            Ok(()) => fs::trash_or_delete(&paths),
             Err(error) => Done { error: Some(error), ..Done::default() },
         };
         let task = cx.update(|window, cx| run(Op::Trash, work, window, cx)).ok()?;
@@ -177,7 +170,7 @@ pub fn trash_after(
 /// None when it's cancelled.
 pub fn delete(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Option<Done>> {
     window.spawn(cx, async move |cx| {
-        if !confirm_delete(&paths, cx).await {
+        if !confirm_delete(&paths, cx.window_handle(), cx).await {
             return None;
         }
         let task = cx.update(|window, cx| run(Op::Trash, move |_| fs::delete(&paths), window, cx)).ok()?;
@@ -186,7 +179,7 @@ pub fn delete(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Op
 }
 
 /// Warns that `paths` will be deleted for good, in Finder's words. Says if that's alright.
-async fn confirm_delete(paths: &[PathBuf], cx: &mut AsyncWindowContext) -> bool {
+pub async fn confirm_delete(paths: &[PathBuf], window: AnyWindowHandle, cx: &mut AsyncApp) -> bool {
     let (question, detail) = match paths {
         [path] => (
             format!("Are you sure you want to delete “{}”?", fs::display_name(path)),
@@ -200,12 +193,13 @@ async fn confirm_delete(paths: &[PathBuf], cx: &mut AsyncWindowContext) -> bool 
             )
         }
     };
-    confirm(&question, Some(&detail), "Delete", cx).await
+    confirm(&question, Some(&detail), "Delete", window, cx).await
 }
 
 /// Asks `question`, offering to `verb` or cancel. Says if it's to go ahead.
-async fn confirm(question: &str, detail: Option<&str>, verb: &str, cx: &mut AsyncWindowContext) -> bool {
-    let answer = cx.update(|window, cx| window.prompt(PromptLevel::Warning, question, detail, &[verb, "Cancel"], cx));
+async fn confirm(question: &str, detail: Option<&str>, verb: &str, window: AnyWindowHandle, cx: &mut AsyncApp) -> bool {
+    let answer =
+        window.update(cx, |_, window, cx| window.prompt(PromptLevel::Warning, question, detail, &[verb, "Cancel"], cx));
     let Ok(answer) = answer else { return false };
     answer.await == Ok(0)
 }

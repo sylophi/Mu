@@ -61,8 +61,8 @@ impl Browser {
                     }
                 });
         }
-        // Only what Mu moved to the Trash says where it goes back to.
-        let known = in_trash && selected.iter().any(|e| fs::origin(&e.path).is_some());
+        let mut origins = fs::Origins::default();
+        let known = in_trash && selected.iter().any(|e| origins.of(&e.path).is_some());
         let single = selected.len() == 1;
         let single_dir = single && selected[0].folder;
         let package = single && selected[0].package;

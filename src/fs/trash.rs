@@ -17,10 +17,12 @@ use objc2::rc::autoreleasepool;
 use objc2_foundation::{NSFileManager, NSSearchPathDirectory, NSSearchPathDomainMask};
 
 use super::{
-    Done, Progress, Undo,
+    Cancelled, Done, Progress, Undo,
     admin::{self, Step},
-    c_path, delete_path, disk_name, display_name, each, file_url, holds_volume, is_read_only, read_dirs, same_volume,
-    trash_dir, unique_path, volume_root, volumes, xattr,
+    c_path, delete_path, disk_name, display_name,
+    ds_store::{records, text},
+    each, file_url, holds_volume, is_read_only, read_dirs, same_volume, trash_dir, unique_path, volume_root, volumes,
+    xattr,
 };
 
 /// The Trashes Finder shows as one: the startup disk's, then each other disk's. A disk's holds what
@@ -54,8 +56,58 @@ fn items_in(dir: &Path) -> io::Result<Vec<PathBuf>> {
 const ORIGIN: &CStr = c"io.github.sylophi.mu.origin";
 
 /// Where `path`, in the Trash, was before Mu moved it there.
-pub fn origin(path: &Path) -> Option<PathBuf> {
+fn origin(path: &Path) -> Option<PathBuf> {
     xattr(path, ORIGIN, libc::XATTR_NOFOLLOW).map(|value| PathBuf::from(OsString::from_vec(value)))
+}
+
+/// Where items in the Trashes came from, whether Mu or Finder moved them there. What Finder noted is
+/// read once for each Trash, so make one of these for all the items at hand.
+#[derive(Default)]
+pub struct Origins(HashMap<PathBuf, HashMap<String, FinderNote>>);
+
+impl Origins {
+    pub fn of(&mut self, path: &Path) -> Option<PathBuf> {
+        origin(path).or_else(|| self.noted_by_finder(path))
+    }
+
+    fn noted_by_finder(&mut self, path: &Path) -> Option<PathBuf> {
+        let trash = path.parent()?;
+        let notes = self.0.entry(trash.to_path_buf()).or_insert_with(|| finder_notes(trash));
+        let note = notes.get(path.file_name()?.to_str()?)?;
+        Some(finder_folder(trash, note.folder.as_ref()?)?.join(note.name.as_ref()?))
+    }
+}
+
+/// What a Trash's `.DS_Store` says about an item: the folder it came from, from the top of its disk,
+/// and the name it had there.
+#[derive(Default)]
+struct FinderNote {
+    folder: Option<String>,
+    name: Option<String>,
+}
+
+/// What Finder noted about the items in the Trash at `trash`, by their names there.
+fn finder_notes(trash: &Path) -> HashMap<String, FinderNote> {
+    let mut notes = HashMap::<String, FinderNote>::new();
+    let file = fs::read(trash.join(".DS_Store")).unwrap_or_default();
+    for (item, code, value) in records(&file).unwrap_or_default() {
+        match &code {
+            b"ptbL" => notes.entry(item).or_default().folder = Some(text(value)),
+            b"ptbN" => notes.entry(item).or_default().name = Some(text(value)),
+            _ => {}
+        }
+    }
+    notes
+}
+
+/// The folder that Finder noted as `folder` for an item in the Trash at `trash`. On the startup disk,
+/// it can go by way of the volume that really holds the folder.
+fn finder_folder(trash: &Path, folder: &str) -> Option<PathBuf> {
+    let folder = folder.trim_start_matches('/');
+    if trash == trash_dir() {
+        return Some(Path::new("/").join(folder.strip_prefix("System/Volumes/Data/").unwrap_or(folder)));
+    }
+    Some(trash.parent()?.parent()?.join(folder))
 }
 
 /// Notes on `path` where it came from. Should that fail, it just can't be put back later.
@@ -87,7 +139,7 @@ pub fn split_by_trash(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
 /// on a disk, it says the same as for a share. It makes the disk's Trash if it's yet to have one,
 /// or it wouldn't tell them apart either. A read-only volume has none, but nothing goes from it
 /// anyway.
-fn lacks_trash(dir: &Path) -> bool {
+pub(super) fn lacks_trash(dir: &Path) -> bool {
     const NS_FEATURE_UNSUPPORTED_ERROR: isize = 3328;
     let Some(root) = volume_root(dir).filter(|_| !is_read_only(dir)) else { return false };
     autoreleasepool(|_| {
@@ -167,6 +219,19 @@ fn set_locked(path: &Path, locked: bool) -> Result<()> {
     Ok(())
 }
 
+/// Moves `paths` to the Trash, and deletes for good those on a volume without one. Callers warn
+/// about those first.
+pub fn trash_or_delete(paths: &[PathBuf]) -> Done {
+    let (trashable, doomed) = split_by_trash(paths.to_vec());
+    let trashed = trash(&trashable);
+    // Turned down an administrator's password: nothing more goes, least of all for good.
+    if trashed.error.as_ref().is_some_and(|error| error.is::<Cancelled>()) {
+        return trashed;
+    }
+    let deleted = delete(&doomed);
+    Done { error: trashed.error.or(deleted.error), ..trashed }
+}
+
 /// Deletes `paths` for good, even what's locked, but never a whole disk.
 pub fn delete(paths: &[PathBuf]) -> Done {
     let (_, error) =
@@ -174,7 +239,7 @@ pub fn delete(paths: &[PathBuf]) -> Done {
     Done { error, ..Done::default() }
 }
 
-fn delete_one(path: &Path) -> Result<()> {
+pub(super) fn delete_one(path: &Path) -> Result<()> {
     if holds_volume(path) {
         bail!("it's a disk, or has one in it");
     }
@@ -200,11 +265,16 @@ fn unlock_all(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Moves items in the Trash back to where they were when Mu moved them there.
+/// Moves items in the Trash back to where they came from.
 pub fn put_back(paths: &[PathBuf]) -> Done {
+    let mut origins = Origins::default();
     let (moves, unknown) = each(paths, |path| {
         let origin =
-            origin(path).with_context(|| format!("Mu doesn't know where “{}” came from", display_name(path)))?;
+            origins.of(path).with_context(|| format!("Mu doesn't know where “{}” came from", display_name(path)))?;
+        // Finder leaves a locked item locked in the Trash, where it can't be moved.
+        if is_locked(path) {
+            set_locked(path, false)?;
+        }
         Ok((path.clone(), origin))
     });
     let done = Undo::PutBack(moves).apply(&Progress::default());
@@ -292,6 +362,54 @@ mod tests {
     }
 
     #[test]
+    fn puts_back_what_finder_trashed() {
+        let scratch = Scratch::new("put-back-finder");
+        let trash = scratch.0.join(".Trashes/501");
+        fs::create_dir_all(&trash).unwrap();
+        fs::write(trash.join(".DS_Store"), include_bytes!("fixtures/finder-trash.ds_store")).unwrap();
+
+        // Finder renamed this one because of another `same.txt` in the Trash.
+        let renamed = trash.join("same 9.04.38\u{202f}AM.txt");
+        fs::write(&renamed, "two").unwrap();
+        let back = put_back(&[renamed]);
+        assert!(back.error.is_none());
+        let to = scratch.0.join("two/same.txt");
+        assert_eq!(back.paths, std::slice::from_ref(&to));
+        assert_eq!(back.undo, Some(Undo::Trash(vec![to.clone()])));
+        assert_eq!(fs::read_to_string(&to).unwrap(), "two");
+
+        // Finder leaves a locked item locked in the Trash. Like one Mu trashed, it comes back unlocked.
+        let locked = trash.join("Case.TXT");
+        fs::write(&locked, "").unwrap();
+        set_locked(&locked, true).unwrap();
+        let back = put_back(std::slice::from_ref(&locked));
+        assert!(back.error.is_none(), "{:?}", back.error);
+        assert!(!is_locked(&scratch.0.join("one/Case.TXT")));
+
+        // Finder didn't note this one.
+        let unknown = trash.join("unknown.txt");
+        fs::write(&unknown, "").unwrap();
+        assert_eq!(Origins::default().of(&unknown), None);
+
+        // What Mu noted comes first: a `.DS_Store` can keep a record after its item has gone.
+        let same = trash.join("same.txt");
+        fs::write(&same, "").unwrap();
+        assert_eq!(Origins::default().of(&same), Some(scratch.0.join("one/same.txt")));
+        set_origin(&same, Path::new("/elsewhere/same.txt"));
+        assert_eq!(Origins::default().of(&same), Some(PathBuf::from("/elsewhere/same.txt")));
+    }
+
+    #[test]
+    fn finder_folders_on_each_kind_of_disk() {
+        let folder = |trash: &Path, folder| finder_folder(trash, folder).unwrap();
+        let (startup, disk) = (trash_dir(), Path::new("/Volumes/Disk/.Trashes/501"));
+        assert_eq!(folder(&startup, "Applications/"), Path::new("/Applications/"));
+        assert_eq!(folder(&startup, "System/Volumes/Data/Users/a/"), Path::new("/Users/a/"));
+        assert_eq!(folder(disk, "/one-offs/nest/"), Path::new("/Volumes/Disk/one-offs/nest/"));
+        assert_eq!(folder(disk, "/System/Volumes/Data/a/"), Path::new("/Volumes/Disk/System/Volumes/Data/a/"));
+    }
+
+    #[test]
     fn put_back_remembers_where_it_came_from() {
         let scratch = Scratch::new("put-back");
         let a = scratch.0.join("a.txt");
@@ -307,7 +425,7 @@ mod tests {
         assert_eq!(back.undo, Some(Undo::Trash(vec![a.clone()])));
         assert_eq!(origin(&a), None);
 
-        // Mu can't tell where something it didn't move to the Trash goes.
+        // Mu can't tell where something goes that neither it nor Finder noted.
         let unknown = put_back(std::slice::from_ref(&a));
         assert!(unknown.error.is_some() && unknown.undo.is_none());
         assert!(a.exists());
