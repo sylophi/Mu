@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(fs::read(at("copy/b/note.txt")).unwrap(), b"hi");
         admin.ask(&Step::Rename(at("copy"), at("renamed"))).unwrap();
         admin.ask(&Step::Trash(at("renamed"), at("trashed"))).unwrap();
-        assert_eq!(files::origin(&at("trashed")), Some(at("renamed")));
+        assert_eq!(files::Origins::default().of(&at("trashed")), Some(at("renamed")));
         admin.ask(&Step::Delete(at("trashed"))).unwrap();
         assert!(!at("trashed").exists() && at("a/b/note.txt").exists());
         // What fails says why, and the next step still goes.

@@ -4,6 +4,7 @@
 pub mod admin;
 mod apps;
 mod archives;
+pub mod ds_store;
 pub mod icloud;
 mod kinds;
 mod listing;
@@ -39,7 +40,7 @@ pub use names::{
     typed_path,
 };
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename, save};
-pub use trash::{empty_trash, is_locked, is_restricted, origin, put_back, set_origin, trash, trash_dirs, trash_items};
+pub use trash::{Origins, empty_trash, is_locked, is_restricted, put_back, set_origin, trash, trash_dirs, trash_items};
 pub use undo::{Done, Undo};
 pub use using::{Holder, holders, names, running_in};
 pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
