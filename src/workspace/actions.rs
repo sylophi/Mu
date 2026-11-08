@@ -17,8 +17,8 @@ use super::{
 };
 use crate::{
     browser::{
-        Compress, Copy, CopyPath, Cut, Duplicate, NewFolder, Open, OpenInEditor, OpenInNewTab, OpenInNewWindow,
-        OpenInTerminal, Paste, QuickLook, Redo, Refresh, Rename, SelectAll, Trash, Undo,
+        Compress, Copy, CopyPath, Cut, DeleteImmediately, Duplicate, NewFolder, Open, OpenInEditor, OpenInNewTab,
+        OpenInNewWindow, OpenInTerminal, Paste, QuickLook, Redo, Refresh, Rename, SelectAll, Trash, Undo,
     },
     editor, finder,
     fs::{self, home_dir},
@@ -239,6 +239,7 @@ pub fn menus(cx: &App) -> Vec<Menu> {
             MenuItem::action("Compress", Compress),
             MenuItem::action("Add to Shelf", AddToShelf),
             MenuItem::action("Move to Trash", Trash),
+            MenuItem::action("Delete Immediately…", DeleteImmediately),
             MenuItem::action("Empty Trash…", EmptyTrash),
             MenuItem::separator(),
             MenuItem::action("Save", editor::Save),

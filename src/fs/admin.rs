@@ -12,7 +12,7 @@ use std::{
     fs::{self, File},
     io::{self, BufRead, BufReader, Write},
     os::fd::FromRawFd as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -40,6 +40,19 @@ pub enum Step {
 }
 
 impl Step {
+    /// The folder it changes something in, if it does.
+    fn dir(&self) -> Option<&Path> {
+        match self {
+            Step::Rename(_, to)
+            | Step::Copy(_, to)
+            | Step::Trash(_, to)
+            | Step::MakeFolder(to)
+            | Step::Write(to, _)
+            | Step::Delete(to) => to.parent(),
+            Step::Launchctl(_) => None,
+        }
+    }
+
     fn run(self) -> Result<()> {
         match self {
             Step::Rename(from, to) => fs::rename(from, to)?,
@@ -72,8 +85,9 @@ thread_local! {
 }
 
 /// Does `step` as root, if `error`, what doing it as you failed with, says you weren't allowed.
+/// Root has no say over what another computer allows, so a share's refusal stands.
 pub fn retry(error: io::Error, step: Step) -> Result<()> {
-    if error.raw_os_error() != Some(libc::EACCES) {
+    if error.raw_os_error() != Some(libc::EACCES) || step.dir().is_some_and(files::is_network) {
         return Err(error.into());
     }
     run(step)

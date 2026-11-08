@@ -72,6 +72,7 @@ gpui_kit::actions!(
         Rename,
         CancelRename,
         Trash,
+        DeleteImmediately,
         PutBack,
         Copy,
         Cut,
@@ -126,6 +127,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-enter", Rename, list),
         KeyBinding::new("delete", Trash, list),
         KeyBinding::new("cmd-backspace", Trash, list),
+        KeyBinding::new("alt-cmd-backspace", DeleteImmediately, list),
         KeyBinding::new("cmd-c", Copy, list),
         KeyBinding::new("cmd-x", Cut, list),
         KeyBinding::new("cmd-v", Paste, list),
@@ -480,6 +482,7 @@ impl Render for Browser {
             }))
             .on_action(cx.listener(|this, _: &Rename, window, cx| this.start_rename(window, cx)))
             .on_action(cx.listener(|this, _: &Trash, window, cx| this.trash(window, cx)))
+            .on_action(cx.listener(|this, _: &DeleteImmediately, window, cx| this.delete_immediately(window, cx)))
             .on_action(cx.listener(|this, _: &PutBack, window, cx| this.put_back(window, cx)))
             .on_action(cx.listener(|this, _: &Undo, window, cx| this.take_back(false, window, cx)))
             .on_action(cx.listener(|this, _: &Redo, window, cx| this.take_back(true, window, cx)))

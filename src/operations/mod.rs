@@ -117,7 +117,8 @@ pub fn transfer(op: Op, paths: Vec<PathBuf>, dir: PathBuf, window: &mut Window, 
 }
 
 /// Moves `paths` to the Trash (see `run`), once it's asked about any that are locked, like Finder.
-/// Resolves to what it did, or None when it's cancelled.
+/// What's on a volume without a Trash is deleted, once it's warned that can't be undone. Resolves
+/// to what it did, or None when it's cancelled.
 pub fn trash(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Option<Done>> {
     trash_after(paths, || Ok(()), window, cx)
 }
@@ -130,27 +131,81 @@ pub fn trash_after(
     window: &mut Window,
     cx: &mut App,
 ) -> Task<Option<Done>> {
-    let locked: Vec<_> = paths.iter().filter(|path| fs::is_locked(path)).collect();
-    let question = match locked.as_slice() {
-        [] => None,
-        [path] => Some(format!("“{}” is locked. Move it to the Trash anyway?", fs::display_name(path))),
-        locked => {
-            Some(format!("{} are locked. Move them to the Trash anyway?", fs::count(locked.len(), "item", "items")))
-        }
-    };
-    let answer =
-        question.map(|question| window.prompt(PromptLevel::Warning, &question, None, &["Move to Trash", "Cancel"], cx));
     window.spawn(cx, async move |cx| {
-        if let Some(answer) = answer
-            && answer.await != Ok(0)
+        // Finding out can mean waiting for a share.
+        let (trashable, doomed, locked) = cx
+            .background_executor()
+            .spawn(async move {
+                let (trashable, doomed) = fs::split_by_trash(paths);
+                let locked: Vec<_> = trashable.iter().filter(|path| fs::is_locked(path)).cloned().collect();
+                (trashable, doomed, locked)
+            })
+            .await;
+        if !doomed.is_empty() && !confirm_delete(&doomed, cx).await {
+            return None;
+        }
+        let question = match locked.as_slice() {
+            [] => None,
+            [path] => Some(format!("“{}” is locked. Move it to the Trash anyway?", fs::display_name(path))),
+            locked => {
+                Some(format!("{} are locked. Move them to the Trash anyway?", fs::count(locked.len(), "item", "items")))
+            }
+        };
+        if let Some(question) = question
+            && !confirm(&question, None, "Move to Trash", cx).await
         {
             return None;
         }
         let work = move |_: &Progress| match first() {
-            Ok(()) => fs::trash(&paths),
+            Ok(()) => {
+                let trashed = fs::trash(&trashable);
+                // Turned down an administrator's password: nothing more goes, least of all for good.
+                if trashed.error.as_ref().is_some_and(|error| error.is::<fs::Cancelled>()) {
+                    return trashed;
+                }
+                let deleted = fs::delete(&doomed);
+                Done { error: trashed.error.or(deleted.error), ..trashed }
+            }
             Err(error) => Done { error: Some(error), ..Done::default() },
         };
         let task = cx.update(|window, cx| run(Op::Trash, work, window, cx)).ok()?;
         Some(task.await)
     })
+}
+
+/// Deletes `paths` for good, once it's warned that can't be undone. Resolves to what it did, or
+/// None when it's cancelled.
+pub fn delete(paths: Vec<PathBuf>, window: &mut Window, cx: &mut App) -> Task<Option<Done>> {
+    window.spawn(cx, async move |cx| {
+        if !confirm_delete(&paths, cx).await {
+            return None;
+        }
+        let task = cx.update(|window, cx| run(Op::Trash, move |_| fs::delete(&paths), window, cx)).ok()?;
+        Some(task.await)
+    })
+}
+
+/// Warns that `paths` will be deleted for good, in Finder's words. Says if that's alright.
+async fn confirm_delete(paths: &[PathBuf], cx: &mut AsyncWindowContext) -> bool {
+    let (question, detail) = match paths {
+        [path] => (
+            format!("Are you sure you want to delete “{}”?", fs::display_name(path)),
+            "This item will be deleted immediately. You can't undo this action.".to_string(),
+        ),
+        paths => {
+            let items = fs::count(paths.len(), "item", "items");
+            (
+                format!("Are you sure you want to delete these {items}?"),
+                format!("{items} will be deleted immediately. You can't undo this action."),
+            )
+        }
+    };
+    confirm(&question, Some(&detail), "Delete", cx).await
+}
+
+/// Asks `question`, offering to `verb` or cancel. Says if it's to go ahead.
+async fn confirm(question: &str, detail: Option<&str>, verb: &str, cx: &mut AsyncWindowContext) -> bool {
+    let answer = cx.update(|window, cx| window.prompt(PromptLevel::Warning, question, detail, &[verb, "Cancel"], cx));
+    let Ok(answer) = answer else { return false };
+    answer.await == Ok(0)
 }

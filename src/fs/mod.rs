@@ -39,7 +39,10 @@ pub use names::{
     typed_path,
 };
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename};
-pub use trash::{empty_trash, is_locked, is_restricted, origin, put_back, set_origin, trash, trash_dirs, trash_items};
+pub use trash::{
+    delete, empty_trash, is_locked, is_restricted, origin, put_back, set_origin, split_by_trash, trash, trash_dirs,
+    trash_items,
+};
 pub use undo::{Done, Undo};
 pub use using::{Holder, holders, names, running_in};
 pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
@@ -48,6 +51,7 @@ use apps::alias_target;
 use kinds::describe;
 use ops::{copy_path, delete_path, disk_name, each, move_path, unique_path};
 use trash::{clear_origin, trash_one};
+use volumes::{holds_volume, is_network, is_read_only};
 
 pub fn c_path(path: &Path) -> io::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)
