@@ -53,9 +53,9 @@ impl Permission {
     }
 
     /// The one that lets Mu past macOS's privacy protection at `path`. Full Disk Access doesn't
-    /// cover iCloud Drive, which has a permission of its own.
+    /// cover iCloud Drive and the apps' folders in it, which have a permission of their own.
     pub fn for_path(path: &Path) -> Permission {
-        if path.starts_with(fs::icloud_drive()) { Permission::ICloudDrive } else { Permission::FullDiskAccess }
+        if fs::icloud::contains(path) { Permission::ICloudDrive } else { Permission::FullDiskAccess }
     }
 
     pub fn name(self) -> &'static str {
@@ -396,4 +396,18 @@ pub fn render_onboarding(close: impl Fn(&ClickEvent, &mut Window, &mut App) + 's
             ),
     )
     .with_priority(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Permission, fs};
+
+    #[test]
+    fn what_icloud_keeps_needs_its_permission() {
+        let root = fs::icloud::root();
+        for path in [fs::icloud_drive().join("a"), root.join("com~apple~TextEdit/Documents/a")] {
+            assert!(Permission::for_path(&path) == Permission::ICloudDrive, "{}", path.display());
+        }
+        assert!(Permission::for_path(&fs::home_dir().join("Library/Mail")) == Permission::FullDiskAccess);
+    }
 }

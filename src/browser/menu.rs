@@ -67,6 +67,7 @@ impl Browser {
         let single_dir = single && selected[0].folder;
         let package = single && selected[0].package;
         let app = this.can_uninstall();
+        let app_folder = selected.iter().any(|e| fs::icloud::is_app_folder(&e.path));
         let (download, remove_download) =
             (!this.selected_icloud(true).is_empty(), !this.selected_icloud(false).is_empty());
         let menu = menu
@@ -128,19 +129,26 @@ impl Browser {
         })
         .separator()
         .menu_with_icon("Copy", IconName::Copy, Box::new(Copy))
-        .menu_with_icon("Cut", IconName::Scissors, Box::new(Cut))
+        .when(!app_folder, |menu| menu.menu_with_icon("Cut", IconName::Scissors, Box::new(Cut)))
         .menu_with_icon_and_disabled("Paste", IconName::ClipboardPaste, Box::new(Paste), !can_paste)
-        .menu_with_icon("Duplicate", IconName::CopyPlus, Box::new(Duplicate))
-        .menu_with_icon("Compress", IconName::FileArchive, Box::new(Compress))
+        .when(!app_folder, |menu| {
+            menu.menu_with_icon("Duplicate", IconName::CopyPlus, Box::new(Duplicate)).menu_with_icon(
+                "Compress",
+                IconName::FileArchive,
+                Box::new(Compress),
+            )
+        })
         .menu_with_icon("Copy Path", IconName::Link, Box::new(CopyPath))
         .separator()
-        .when(single, |menu| menu.menu_with_icon("Rename", IconName::Pencil, Box::new(Rename)))
+        .when(single && !app_folder, |menu| menu.menu_with_icon("Rename", IconName::Pencil, Box::new(Rename)))
         .menu_with_icon("Add to Shelf", IconName::Inbox, Box::new(AddToShelf))
         .when(selected.iter().all(|e| e.folder), |menu| {
             menu.menu_with_icon("Add to Sidebar", IconName::PanelLeft, Box::new(AddToSidebar))
         })
-        .when(!in_trash, |menu| menu.menu_with_icon("Move to Trash", IconName::Trash, Box::new(Trash)))
-        .menu_with_icon("Delete Immediately…", IconName::Trash, Box::new(DeleteImmediately))
+        .when(!in_trash && !app_folder, |menu| menu.menu_with_icon("Move to Trash", IconName::Trash, Box::new(Trash)))
+        .when(!app_folder, |menu| {
+            menu.menu_with_icon("Delete Immediately…", IconName::Trash, Box::new(DeleteImmediately))
+        })
         .when(app, |menu| menu.menu_with_icon("Uninstall…", IconName::PackageX, Box::new(Uninstall)))
     }
 }

@@ -18,13 +18,23 @@ pub struct Places {
     pub trash_dirs: Vec<PathBuf>,
     /// How many items are in them.
     pub trash: usize,
+    /// The apps' folders iCloud Drive shows (see `fs::icloud::app_folders`).
+    pub app_folders: Vec<PathBuf>,
     _trash_watch: Task<()>,
+    _app_folders_watch: Task<()>,
 }
 
 impl Global for Places {}
 
 pub fn init(cx: &mut App) {
-    let places = Places { volumes: fs::volumes(), trash_dirs: Vec::new(), trash: 0, _trash_watch: Task::ready(()) };
+    let places = Places {
+        volumes: fs::volumes(),
+        trash_dirs: Vec::new(),
+        trash: 0,
+        app_folders: Vec::new(),
+        _trash_watch: Task::ready(()),
+        _app_folders_watch: Task::ready(()),
+    };
     cx.set_global(places);
     let apply = |volumes, cx: &mut App| {
         cx.update_global::<Places, _>(|places, _| places.volumes = volumes);
@@ -32,8 +42,21 @@ pub fn init(cx: &mut App) {
     };
     watch(&[PathBuf::from("/Volumes")], fs::volumes, apply, cx).detach();
     watch_trash(fs::trash_dirs(), cx);
-    // The Trash can't be read without Full Disk Access, so it's read again once that's granted.
-    cx.observe(&Permissions::global(cx), |_, cx| watch_trash(fs::trash_dirs(), cx)).detach();
+    watch_app_folders(cx);
+    // The Trash can't be read without Full Disk Access, nor the apps' folders without iCloud Drive's
+    // permission, so they're read again once those are granted.
+    cx.observe(&Permissions::global(cx), |_, cx| {
+        watch_trash(fs::trash_dirs(), cx);
+        watch_app_folders(cx);
+    })
+    .detach();
+}
+
+/// Keeps up with which apps' folders iCloud Drive shows, as apps start keeping things there.
+fn watch_app_folders(cx: &mut App) {
+    let apply = |folders, cx: &mut App| cx.update_global::<Places, _>(|places, _| places.app_folders = folders);
+    let watch = watch(&[fs::icloud::root()], fs::icloud::app_folders, apply, cx);
+    cx.update_global::<Places, _>(|places, _| places._app_folders_watch = watch);
 }
 
 /// Watches the Trashes again if they've changed: a disk came or went, or got a Trash of its own.

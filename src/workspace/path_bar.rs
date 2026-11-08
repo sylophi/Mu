@@ -50,7 +50,11 @@ struct Connecting;
 /// The folders the path bar shows for `path`, starting at the home folder, iCloud Drive or the
 /// volume it's on.
 fn path_segments(path: &Path, home: &Path, icloud: &Path) -> Vec<PathBuf> {
-    let base = if path.starts_with(icloud) {
+    // An app's folder is at the top of iCloud Drive, wherever iCloud keeps it.
+    let app = icloud.parent().and_then(|root| fs::icloud::app_folder_in(path, root));
+    let base = if let Some(app) = &app {
+        app.clone()
+    } else if path.starts_with(icloud) {
         icloud.to_path_buf()
     } else if path.starts_with(home) {
         home.to_path_buf()
@@ -61,7 +65,7 @@ fn path_segments(path: &Path, home: &Path, icloud: &Path) -> Vec<PathBuf> {
     };
     let rest = path.strip_prefix(&base).unwrap_or(path);
     let mut dir = base.clone();
-    let mut segments = vec![base];
+    let mut segments = if app.is_some() { vec![icloud.to_path_buf(), base] } else { vec![base] };
     for component in rest.components() {
         dir.push(component);
         segments.push(dir.clone());
@@ -313,7 +317,7 @@ impl Workspace {
         }
         let theme = cx.theme();
         let rows = editor.suggestions.iter().enumerate().map(|(ix, dir)| {
-            let parent = dir.parent().map(shown_path).unwrap_or_default();
+            let parent = fs::icloud::enclosing(dir).map(|dir| shown_path(&dir)).unwrap_or_default();
             row(("suggestion", ix), theme)
                 .cursor_pointer()
                 .when(editor.picked == Some(ix), |el| el.bg(theme.list_active))
@@ -373,6 +377,17 @@ mod tests {
         let icloud = "/Users/me/Library/Mobile Documents/com~apple~CloudDocs";
         assert_eq!(segments(&format!("{icloud}/Notes")), paths(&[icloud, &format!("{icloud}/Notes")]));
         assert_eq!(segments("/Volumes/Backup/Photos"), paths(&["/Volumes/Backup", "/Volumes/Backup/Photos"]));
+    }
+
+    #[test]
+    fn an_apps_folder_is_in_icloud_drive() {
+        let root = "/Users/me/Library/Mobile Documents";
+        let (icloud, app) = (format!("{root}/com~apple~CloudDocs"), format!("{root}/com~apple~TextEdit/Documents"));
+        assert_eq!(segments(&app), paths(&[&icloud, &app]));
+        assert_eq!(segments(&format!("{app}/Notes")), paths(&[&icloud, &app, &format!("{app}/Notes")]));
+        // iCloud Drive's own Documents is just a folder in it.
+        let own = format!("{icloud}/Documents");
+        assert_eq!(segments(&own), paths(&[&icloud, &own]));
     }
 
     #[test]

@@ -98,6 +98,8 @@ pub struct Usage {
     pub name: Box<OsStr>,
     /// A folder on the same disk, whose size is what's in it. Links and other disks aren't.
     pub folder: bool,
+    /// Its flags, like `SF_DATALESS`.
+    pub flags: u32,
     /// The bytes only this file has.
     pub size: u64,
     /// The bytes it shares with its clones or its other hard links, which count once among them.
@@ -138,6 +140,7 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
             | ATTR_CMN_ERROR
             | libc::ATTR_CMN_NAME
             | libc::ATTR_CMN_OBJTYPE
+            | libc::ATTR_CMN_FLAGS
             | libc::ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: libc::ATTR_DIR_MOUNTSTATUS,
@@ -154,6 +157,7 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
         }
         let Some(name) = record.name(has(libc::ATTR_CMN_NAME)) else { return };
         let object = record.next::<u32>(has(libc::ATTR_CMN_OBJTYPE)).unwrap_or(0);
+        let flags = record.next::<u32>(has(libc::ATTR_CMN_FLAGS)).unwrap_or(0);
         let file = record.next::<u64>(has(libc::ATTR_CMN_FILEID)).unwrap_or(0);
         let mount = record.next::<u32>(returned.dirattr & libc::ATTR_DIR_MOUNTSTATUS != 0).unwrap_or(0);
         let links = record.next::<u32>(returned.fileattr & libc::ATTR_FILE_LINKCOUNT != 0).unwrap_or(1);
@@ -170,11 +174,37 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
         items.push(Usage {
             name: OsStr::from_bytes(name).into(),
             folder: object == VDIR && mount & libc::DIR_MNTSTATUS_MNTPOINT == 0,
+            flags,
             size,
             shared,
         });
     })?;
     Ok(items)
+}
+
+/// Whether anything in `dir`, however deep, is only in iCloud. A big folder can take a while, so it
+/// stops at the first folder with one and can be dropped between folders. A folder that's only in
+/// iCloud counts without being opened, as opening it would download it.
+pub async fn holds_cloud_only(dir: PathBuf) -> bool {
+    holds_flagged(dir, SF_DATALESS).await
+}
+
+/// Whether anything in `dir`, however deep, has any of `flags`, going into folders that don't.
+async fn holds_flagged(dir: PathBuf, flags: u32) -> bool {
+    let mut folders = vec![dir];
+    while let Some(folder) = folders.pop() {
+        // One that can't be opened has nothing to tell.
+        for item in list_usage(&folder).unwrap_or_default() {
+            if item.flags & flags != 0 {
+                return true;
+            }
+            if item.folder {
+                folders.push(folder.join(&*item.name));
+            }
+        }
+        smol::future::yield_now().await;
+    }
+    false
 }
 
 /// Asks for `request` about everything in `dir`, a buffer at a time, handing each item's record to
@@ -328,6 +358,7 @@ pub fn watch(dirs: Vec<PathBuf>, subfolders: bool, settle: Duration, executor: &
             // watched.
             let named: Vec<(PathBuf, PathBuf)> =
                 dirs.iter().map(|dir| (fs::canonicalize(dir).unwrap_or_else(|_| dir.clone()), dir.clone())).collect();
+            let in_icloud = dirs.iter().any(|dir| icloud::contains(dir));
             let _watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
                 if event.kind.is_access() {
@@ -339,7 +370,7 @@ pub fn watch(dirs: Vec<PathBuf>, subfolders: bool, settle: Duration, executor: &
                         changed.add(path, &event.kind, watched, named);
                     }
                 }
-                if !changed.paths.is_empty() {
+                if !changed.paths.is_empty() || (changed.deep && in_icloud) {
                     tx.send_blocking(changed).ok();
                 }
             })
@@ -361,7 +392,7 @@ pub fn watch(dirs: Vec<PathBuf>, subfolders: bool, settle: Duration, executor: &
                     .and_then(|metadata| metadata.modified())
                     .is_ok_and(|modified| modified + Duration::from_secs(2) >= since)
             }) {
-                started.send(Changed { items: true, paths: Vec::new() }).await.ok();
+                started.send(Changed { items: true, ..Changed::default() }).await.ok();
             }
             // Until the changes drop.
             started.closed().await;
@@ -379,6 +410,9 @@ pub struct Changed {
     /// from, as a folder's icon shows whether it's empty. Those are the folder itself and its
     /// subfolders.
     pub paths: Vec<PathBuf>,
+    /// Whether something changed further down, in a subfolder's subfolders. Told only of iCloud's,
+    /// where it can change what's only in iCloud.
+    pub deep: bool,
 }
 
 impl Changed {
@@ -390,6 +424,8 @@ impl Changed {
         if depth <= 1 {
             self.items = true;
             self.paths.push(named.join(relative));
+        } else {
+            self.deep = true;
         }
         let came_or_went =
             matches!(kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)));
@@ -417,6 +453,7 @@ impl Changes {
         smol::Timer::after(self.settle).await;
         while let Ok(more) = self.rx.try_recv() {
             changed.items |= more.items;
+            changed.deep |= more.deep;
             changed.paths.extend(more.paths);
         }
         Some(changed)
@@ -430,7 +467,21 @@ mod tests {
 
     use objc2_foundation::{NSURL, NSURLBookmarkCreationOptions};
 
-    use crate::fs::{Scratch, file_url};
+    use crate::fs::{Scratch, c_path, file_url};
+
+    #[test]
+    fn finds_what_is_flagged_however_deep_without_following_links() {
+        let scratch = Scratch::new("flagged");
+        let dir = scratch.0.join("top");
+        fs::create_dir_all(dir.join("a/b")).unwrap();
+        fs::write(dir.join("a/b/file"), "").unwrap();
+        std::os::unix::fs::symlink(&dir, dir.join("a/loop")).unwrap();
+        let holds = || smol::block_on(holds_flagged(dir.clone(), libc::UF_HIDDEN));
+        assert!(!holds());
+        let file = c_path(&dir.join("a/b/file")).unwrap();
+        assert_eq!(unsafe { libc::chflags(file.as_ptr(), libc::UF_HIDDEN) }, 0);
+        assert!(holds());
+    }
 
     #[test]
     fn changes_say_whether_items_changed_and_what_may_look_different() {

@@ -3,6 +3,7 @@
 
 use std::{
     collections::HashMap,
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -10,8 +11,8 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 
 use super::{
-    Done, Progress, Undo, copy_path, delete_one, disk_name, display_name, each, is_package, lacks_trash, move_path,
-    natural_cmp, same_volume, trash_one, trash_or_delete, unique_path,
+    Done, Progress, Undo, copy_path, delete_one, disk_name, display_name, each, icloud, is_package, lacks_trash,
+    move_path, natural_cmp, same_volume, trash_one, trash_or_delete, unique_path,
 };
 
 /// What to do about an item copied or moved in whose name is taken there.
@@ -72,7 +73,7 @@ pub fn clashes(sources: &[PathBuf], dir: &Path) -> Vec<Clash> {
     }
     let mut found = Vec::new();
     for source in sources.iter().filter(|source| source.parent() != Some(dir) && !dir.starts_with(source)) {
-        find(source, &dir.join(disk_name(source)), &mut found);
+        find(source, &dir.join(copy_name(source)), &mut found);
     }
     found
 }
@@ -217,9 +218,15 @@ pub fn copy_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
             merge.made.push(target.clone());
             return Ok(Some(target));
         }
-        merge.copy(source, &dir.join(disk_name(source)))
+        merge.copy(source, &dir.join(copy_name(source)))
     });
     merge.done(landed.into_iter().flatten().collect(), error)
+}
+
+/// The name a copy of `source` gets: its own, or for an app's folder in iCloud Drive the app's, as
+/// on disk they're all called Documents.
+fn copy_name(source: &Path) -> OsString {
+    if icloud::is_app_folder(source) { display_name(source).into() } else { disk_name(source).to_owned() }
 }
 
 /// Copies each of `sources` next to itself, under a name of its own, like "notes copy.txt".

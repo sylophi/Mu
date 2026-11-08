@@ -85,6 +85,7 @@ struct Batch<'a> {
     /// The selection's paths, for dragging, worked out the first time a selected item needs them.
     selected_paths: OnceCell<Rc<Vec<PathBuf>>>,
     underway: &'a Underway,
+    cloud_inside: &'a HashSet<PathBuf>,
 }
 
 impl Batch<'_> {
@@ -101,7 +102,10 @@ impl Batch<'_> {
             return Some(Activity::Unsynced(unsynced.clone()));
         }
         let inside = if entry.folder { self.underway.inside(&entry.path) } else { Vec::new() };
-        (!inside.is_empty()).then_some(Activity::Inside(inside))
+        if !inside.is_empty() {
+            return Some(Activity::Inside(inside));
+        }
+        (entry.cloud_only || self.cloud_inside.contains(&entry.path)).then_some(Activity::InCloud)
     }
 }
 
@@ -381,7 +385,7 @@ impl Browser {
     }
 
     /// What the rows, tiles or the layout's items all go by.
-    fn batch<'a>(&self, window: &Window, cx: &'a App) -> Batch<'a> {
+    fn batch<'a>(&'a self, window: &Window, cx: &'a App) -> Batch<'a> {
         let (focused, theme) = (self.focus_handle.contains_focused(window, cx), cx.theme());
         let (tile_icon, tile_width, light) = match self.mode(cx) {
             Mode::Layout(layout) => (layout.icon_size, layout.tile_width(), layout.light == Some(true)),
@@ -403,6 +407,7 @@ impl Browser {
             cut: CutFiles::current(cx),
             selected_paths: OnceCell::new(),
             underway: Underway::global(cx).read(cx),
+            cloud_inside: &self.cloud_inside,
         }
     }
 
@@ -485,11 +490,11 @@ impl Browser {
             // Cut in the middle, so a long name keeps its end, like "…0012.jpeg".
             None => el
                 .child(div().min_w_0().truncate().text_ellipsis_middle().child(one_line(&entry.name)))
-                .children(mark(entry, activity.as_ref(), cx)),
+                .children(mark(activity.as_ref(), cx)),
         });
         // While something's underway for it, or something keeps it out of sync, that's what's new
         // about it, and how much is done is its size so far.
-        let (modified, color) = match status(entry, activity.as_ref(), false, cx) {
+        let (modified, color) = match status(activity.as_ref(), false, cx) {
             Some((status, color)) => (Some(status), color),
             None => (entry.modified.map(fs::format_date), muted),
         };
@@ -533,7 +538,7 @@ impl Browser {
         let activity = batch.activity(entry);
         let theme = cx.theme();
         // Under the name, in place of its second line.
-        let status = status(entry, activity.as_ref(), true, cx);
+        let status = status(activity.as_ref(), true, cx);
         let (first, rest) = match status {
             Some(_) => (one_line(&entry.name), None),
             None => tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper),
@@ -665,11 +670,13 @@ enum Activity {
     Unsynced(Unsynced),
     /// It's a folder with things underway inside it.
     Inside(Vec<Rc<Transfer>>),
+    /// It, or something in it if it's a folder, is only in iCloud.
+    InCloud,
 }
 
 /// What's going on with an item, and the color to say it in: in full, like "Downloading, 2 min
 /// left", or `short`, like "↓ 40%", for under a tile's name.
-fn status(entry: &Entry, activity: Option<&Activity>, short: bool, cx: &App) -> Option<(String, Hsla)> {
+fn status(activity: Option<&Activity>, short: bool, cx: &App) -> Option<(String, Hsla)> {
     let theme = cx.theme();
     match activity {
         Some(Activity::Underway(transfer)) if short => Some((underway::progress(transfer), theme.muted_foreground)),
@@ -677,15 +684,15 @@ fn status(entry: &Entry, activity: Option<&Activity>, short: bool, cx: &App) -> 
         Some(Activity::Unsynced(Unsynced::Waiting)) => Some((Unsynced::Waiting.describe(), theme.muted_foreground)),
         Some(Activity::Unsynced(unsynced)) => Some((unsynced.describe(), theme.warning)),
         Some(Activity::Inside(inside)) => Some((underway::summary(inside), theme.muted_foreground)),
-        None if short && entry.cloud_only => Some(("In iCloud".into(), theme.muted_foreground)),
-        None => None,
+        Some(Activity::InCloud) if short => Some(("In iCloud".into(), theme.muted_foreground)),
+        Some(Activity::InCloud) | None => None,
     }
 }
 
 /// The mark after an item's name: whether it's only in iCloud or isn't in sync with it, or if
 /// something's underway inside a folder. For what's underway for the item itself, the icon fills
 /// in instead, and the mark is a way to stop it.
-fn mark(entry: &Entry, activity: Option<&Activity>, cx: &App) -> Option<AnyElement> {
+fn mark(activity: Option<&Activity>, cx: &App) -> Option<AnyElement> {
     let theme = cx.theme();
     let icon = |name: IconName, color: Hsla| Icon::new(name).xsmall().flex_none().text_color(color).into_any_element();
     match activity {
@@ -695,7 +702,8 @@ fn mark(entry: &Entry, activity: Option<&Activity>, cx: &App) -> Option<AnyEleme
         Some(Activity::Inside(_)) => {
             Some(div().flex_none().size(px(5.)).mx_1().rounded_full().bg(theme.muted_foreground).into_any_element())
         }
-        None => entry.cloud_only.then(|| icon(IconName::CloudDownload, theme.muted_foreground)),
+        Some(Activity::InCloud) => Some(icon(IconName::CloudDownload, theme.muted_foreground)),
+        None => None,
     }
 }
 
