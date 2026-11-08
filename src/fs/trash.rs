@@ -194,6 +194,10 @@ pub fn put_back(paths: &[PathBuf]) -> Done {
     let (moves, unknown) = each(paths, |path| {
         let origin =
             origins.of(path).with_context(|| format!("Mu doesn't know where “{}” came from", display_name(path)))?;
+        // Finder leaves a locked item locked in the Trash, where it can't be moved.
+        if is_locked(path) {
+            set_locked(path, false)?;
+        }
         Ok((path.clone(), origin))
     });
     let done = Undo::PutBack(moves).apply(&Progress::default());
@@ -261,6 +265,14 @@ mod tests {
         assert_eq!(back.undo, Some(Undo::Trash(vec![to.clone()])));
         assert_eq!(fs::read_to_string(&to).unwrap(), "two");
 
+        // Finder leaves a locked item locked in the Trash. Like one Mu trashed, it comes back unlocked.
+        let locked = trash.join("Case.TXT");
+        fs::write(&locked, "").unwrap();
+        set_locked(&locked, true).unwrap();
+        let back = put_back(std::slice::from_ref(&locked));
+        assert!(back.error.is_none(), "{:?}", back.error);
+        assert!(!is_locked(&scratch.0.join("one/Case.TXT")));
+
         // Finder didn't note this one.
         let unknown = trash.join("unknown.txt");
         fs::write(&unknown, "").unwrap();
@@ -300,7 +312,7 @@ mod tests {
         assert_eq!(back.undo, Some(Undo::Trash(vec![a.clone()])));
         assert_eq!(origin(&a), None);
 
-        // Mu can't tell where something it didn't move to the Trash goes.
+        // Mu can't tell where something goes that neither it nor Finder noted.
         let unknown = put_back(std::slice::from_ref(&a));
         assert!(unknown.error.is_some() && unknown.undo.is_none());
         assert!(a.exists());
