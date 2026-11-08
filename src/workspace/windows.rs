@@ -20,6 +20,7 @@ use crate::{
 pub(super) fn init(cx: &mut App) {
     let app = cx.to_async();
     quicklook::init(move |view, at| app.update(|cx| look_up(view, at, cx)));
+    cx.on_quit_requested(confirm_quit);
     // Closing the last window saves it as it goes, so quitting then has nothing to save.
     cx.on_app_quit(|cx| {
         let windows = open_windows(cx);
@@ -299,45 +300,75 @@ pub(super) fn confirm_running(
     window.spawn(cx, async move |_| matches!(answer.await, Ok(0)))
 }
 
-/// Quits once terminals that run something may close and every window's unsaved changes are saved
-/// or let go, doing `then` first.
-pub fn quit(cx: &mut App, then: impl FnOnce() + 'static) {
+/// Set while a quit is being asked about, so another way of quitting doesn't ask over it.
+struct ConfirmingQuit;
+
+impl Global for ConfirmingQuit {}
+
+/// Asks about what quitting would lose, resolving to whether quitting can go on. A quit asked for
+/// during another is left to that one's answer.
+fn confirm_quit(cx: &mut App) -> Task<bool> {
+    if cx.has_global::<ConfirmingQuit>() {
+        return Task::ready(false);
+    }
+    cx.set_global(ConfirmingQuit);
     cx.spawn(async move |cx| {
-        // Read once the window handling the keystroke is done, as it can't be read until then.
-        // Running terminals are asked about once for every window, in the front one with any.
-        let running: Vec<_> = cx.update(|cx| {
-            workspaces(cx)
-                .into_iter()
-                .map(|(handle, workspace)| (handle, workspace.read(cx).running(cx)))
-                .filter(|(_, running)| !running.is_empty())
-                .collect()
-        });
-        if let Some(&(front, _)) = running.first() {
-            let names = running.into_iter().flat_map(|(_, running)| running).collect();
-            if let Ok(confirm) = front.update(cx, |_, window, cx| {
+        let confirmed = ask_before_quitting(cx).await;
+        cx.update(|cx| cx.remove_global::<ConfirmingQuit>());
+        confirmed
+    })
+}
+
+/// Whether terminals that run something may close and every window's unsaved changes are saved or
+/// let go. What's asked about comes to the front, as Mu may be in the background when it's asked
+/// to quit.
+async fn ask_before_quitting(cx: &mut AsyncApp) -> bool {
+    // Read once the window handling the keystroke is done, as it can't be read until then.
+    // Running terminals are asked about once for every window, in the front one with any.
+    let running: Vec<_> = cx.update(|cx| {
+        workspaces(cx)
+            .into_iter()
+            .map(|(handle, workspace)| (handle, workspace.read(cx).running(cx)))
+            .filter(|(_, running)| !running.is_empty())
+            .collect()
+    });
+    if let Some(&(front, _)) = running.first() {
+        let names = running.into_iter().flat_map(|(_, running)| running).collect();
+        if let Ok(confirm) = front.update(cx, |_, window, cx| {
+            cx.activate(true);
+            window.activate_window();
+            confirm_running(names, "Quit Mu?", "Quit", window, cx)
+        }) && !confirm.await
+        {
+            return false;
+        }
+    }
+    for (handle, workspace) in cx.update(|cx| workspaces(cx)) {
+        let confirm = handle.update(cx, |_, window, cx| {
+            let unsaved = workspace.read(cx).unsaved(cx);
+            if !unsaved.is_empty() {
+                cx.activate(true);
                 window.activate_window();
-                confirm_running(names, "Quit Mu?", "Quit", window, cx)
-            }) && !confirm.await
-            {
-                return;
             }
+            confirm_discard(unsaved, window, cx)
+        });
+        if let Ok(confirm) = confirm
+            && !confirm.await
+        {
+            return false;
         }
-        for (handle, workspace) in cx.update(|cx| workspaces(cx)) {
-            let confirm = handle.update(cx, |_, window, cx| {
-                let unsaved = workspace.read(cx).unsaved(cx);
-                if !unsaved.is_empty() {
-                    window.activate_window();
-                }
-                confirm_discard(unsaved, window, cx)
-            });
-            if let Ok(confirm) = confirm
-                && !confirm.await
-            {
-                return;
-            }
+    }
+    true
+}
+
+/// Quits once what it would lose is seen to, doing `then` first.
+pub fn quit(cx: &mut App, then: impl FnOnce() + 'static) {
+    let confirmed = confirm_quit(cx);
+    cx.spawn(async move |cx| {
+        if confirmed.await {
+            then();
+            cx.update(|cx| cx.quit());
         }
-        then();
-        cx.update(|cx| cx.quit());
     })
     .detach();
 }
