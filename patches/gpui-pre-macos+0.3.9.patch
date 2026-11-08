@@ -12,6 +12,11 @@ first):
   frames, since frames drawn faster than the display shows them only queue up.
 - A drag Mu hands to macOS, like files dragged out to another app, stops the last mouse move being
   replayed once it begins (`draggingSession:willBeginAtPoint:` in `window.rs`).
+- A quit from outside the app, like the Dock's or logging out's, waits for
+  `App::on_quit_requested`, and a no cancels it (`applicationShouldTerminate:` in `platform.rs`). A
+  quit the app asked for itself goes straight through.
+- A prompt on a window that closes ends, so what's waiting for its answer doesn't wait forever
+  (`prompt` and `Drop for MacWindow` in `window.rs`).
 - Its deprecation warnings are allowed, as Zed's workspace allows them and the published manifest
   leaves that out (`Cargo.toml`). Cargo shows a patched crate's warnings, unlike a crates.io one's.
 
@@ -48,8 +53,93 @@ index 81b1b5e..641fcee 100644
      pub fn take_signal(&self) -> Option<(Instant, FrameRequestSource)> {
          self.signal.take()
      }
+diff --git a/src/platform.rs b/src/platform.rs
+index f053856..8c84d22 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -8,7 +8,7 @@ use block2::RcBlock;
+ use cocoa::{
+     appkit::{
+         NSAppearanceNameVibrantDark, NSAppearanceNameVibrantLight, NSApplication,
+-        NSApplicationActivationPolicy,
++        NSApplicationActivationPolicy, NSApplicationTerminateReply,
+         NSApplicationActivationPolicy::{
+             NSApplicationActivationPolicyAccessory, NSApplicationActivationPolicyRegular,
+         },
+@@ -100,6 +100,10 @@ unsafe fn build_classes() {
+                 sel!(applicationShouldHandleReopen:hasVisibleWindows:),
+                 should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
+             );
++            decl.add_method(
++                sel!(applicationShouldTerminate:),
++                should_terminate as extern "C" fn(&mut Object, Sel, id) -> NSUInteger,
++            );
+             decl.add_method(
+                 sel!(applicationWillTerminate:),
+                 will_terminate as extern "C" fn(&mut Object, Sel, id),
+@@ -195,6 +199,7 @@ pub(crate) struct MacPlatformState {
+     on_system_wake: Option<Box<dyn FnMut()>>,
+     system_power_observers_registered: bool,
+     quit: Option<Box<dyn FnMut() -> bool>>,
++    quit_requested: Option<Box<dyn FnMut(Box<dyn FnOnce(bool)>)>>,
+     menu_command: Option<Box<dyn FnMut(&dyn Action)>>,
+     validate_menu_command: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
+     will_open_menu: Option<Box<dyn FnMut()>>,
+@@ -258,6 +263,7 @@ impl MacPlatform {
+             find_pasteboard: Pasteboard::find(),
+             reopen: None,
+             quit: None,
++            quit_requested: None,
+             menu_command: None,
+             validate_menu_command: None,
+             will_open_menu: None,
+@@ -598,6 +604,8 @@ impl Platform for MacPlatform {
+         // this, we make quitting the application asynchronous so that we aren't holding borrows to
+         // the app state on the stack when we actually terminate the app.
+ 
++        // The app has decided, so there's no asking it.
++        self.0.lock().quit_requested = None;
+         unsafe {
+             DispatchQueue::main().exec_async_f(ptr::null_mut(), quit);
+         }
+@@ -1064,6 +1072,10 @@ impl Platform for MacPlatform {
+         self.0.lock().quit = Some(callback);
+     }
+ 
++    fn on_quit_requested(&self, callback: Box<dyn FnMut(Box<dyn FnOnce(bool)>)>) {
++        self.0.lock().quit_requested = Some(callback);
++    }
++
+     fn on_reopen(&self, callback: Box<dyn FnMut()>) {
+         self.0.lock().reopen = Some(callback);
+     }
+@@ -1378,6 +1390,24 @@ extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_wi
+     }
+ }
+ 
++/// Holds up a quit from outside the app, like the Dock's or logging out's, until the app has said
++/// whether it goes ahead. AppKit turns down any other quit from outside in the meantime, and
++/// passes on the answer to whoever asked, so a no cancels a logout too.
++extern "C" fn should_terminate(this: &mut Object, _: Sel, _: id) -> NSUInteger {
++    let platform = unsafe { get_mac_platform(this) };
++    let mut lock = platform.0.lock();
++    let Some(mut callback) = lock.quit_requested.take() else {
++        return NSApplicationTerminateReply::NSTerminateNow as NSUInteger;
++    };
++    drop(lock);
++    callback(Box::new(|quit| unsafe {
++        let app = NSApplication::sharedApplication(nil);
++        let _: () = msg_send![app, replyToApplicationShouldTerminate: quit.to_objc()];
++    }));
++    platform.0.lock().quit_requested.get_or_insert(callback);
++    NSApplicationTerminateReply::NSTerminateLater as NSUInteger
++}
++
+ extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
+     let platform = unsafe { get_mac_platform(this) };
+     let mut lock = platform.0.lock();
 diff --git a/src/window.rs b/src/window.rs
-index b042825..566f159 100644
+index b042825..e5f9011 100644
 --- a/src/window.rs
 +++ b/src/window.rs
 @@ -1,3 +1,4 @@
@@ -86,7 +176,11 @@ index b042825..566f159 100644
          decl.add_method(
              sel!(draggingSession:endedAtPoint:operation:),
              dragging_session_ended as extern "C" fn(&Object, Sel, id, NSPoint, NSDragOperation),
-@@ -712,9 +722,35 @@ struct MacWindowState {
+@@ -709,12 +719,39 @@ struct MacWindowState {
+     toggle_tab_bar_callback: Option<Box<dyn FnMut()>>,
+     activated_least_once: bool,
+     closed: Arc<AtomicBool>,
++    prompts: Vec<Rc<Cell<Option<oneshot::Sender<usize>>>>>,
      accesskit_adapter: Option<accesskit_macos::SubclassingAdapter>,
      // The parent window if this window is a sheet (Dialog kind)
      sheet_parent: Option<id>,
@@ -122,7 +216,7 @@ index b042825..566f159 100644
      fn move_traffic_light(&mut self) {
          if let Some(traffic_light_position) = self.traffic_light_position {
              if self.is_fullscreen() && !self.is_exiting_fullscreen {
-@@ -848,6 +884,7 @@ impl MacWindowState {
+@@ -848,6 +885,7 @@ impl MacWindowState {
              // AppKit can temporarily report no screen while displays are being reconfigured.
              return;
          };
@@ -130,8 +224,11 @@ index b042825..566f159 100644
          let data = self.native_view.as_ptr() as *mut c_void;
          self.frame_source
              .get_or_insert_with(|| WindowFrameSource::new(data, step))
-@@ -1148,6 +1185,10 @@ impl MacWindow {
+@@ -1146,8 +1184,13 @@ impl MacWindow {
+                 toggle_tab_bar_callback: None,
+                 activated_least_once: false,
                  closed: Arc::new(AtomicBool::new(false)),
++                prompts: Vec::new(),
                  accesskit_adapter: None,
                  sheet_parent: None,
 +                frame_requested_at: Instant::now(),
@@ -141,7 +238,53 @@ index b042825..566f159 100644
              }));
              let mut window = Self(state, marker);
  
-@@ -2022,6 +2063,20 @@ impl PlatformWindow for MacWindow {
+@@ -1398,12 +1441,20 @@ impl Drop for MacWindow {
+         // A delivery task queued by `report_visibility` may still run after the
+         // GPUI window is gone; without a callback it has nothing to notify.
+         this.visibility_callback.take();
++        // A sheet that goes with its window never says what was answered.
++        for prompt in this.prompts.drain(..) {
++            prompt.take();
++        }
+         this.foreground_executor
+             .spawn(async move {
+                 unsafe {
+                     if let Some(parent) = sheet_parent {
+                         let _: () = msg_send![parent, endSheet: window];
+                     }
++                    let prompt: id = msg_send![window, attachedSheet];
++                    if prompt != nil {
++                        let _: () = msg_send![window, endSheet: prompt];
++                    }
+                     window.close();
+                     window.autorelease();
+                 }
+@@ -1760,15 +1811,19 @@ impl PlatformWindow for MacWindow {
+         }
+ 
+         let (done_tx, done_rx) = oneshot::channel();
+-        let done_tx = Cell::new(Some(done_tx));
++        let done_tx = Rc::new(Cell::new(Some(done_tx)));
+ 
+-        let block = RcBlock::new(move |answer: NSInteger| {
+-            if let Some(done_tx) = done_tx.take() {
+-                let _ = done_tx.send(answer.try_into().unwrap());
++        let block = RcBlock::new({
++            let done_tx = done_tx.clone();
++            move |answer: NSInteger| {
++                if let Some(done_tx) = done_tx.take() {
++                    let _ = done_tx.send(answer.try_into().unwrap());
++                }
+             }
+         });
+ 
+-        let lock = self.0.lock();
++        let mut lock = self.0.lock();
++        lock.prompts.push(done_tx);
+         let native_window = lock.native_window;
+         let closed = lock.closed.clone();
+         let executor = lock.foreground_executor.clone();
+@@ -2022,6 +2077,20 @@ impl PlatformWindow for MacWindow {
          self.0.as_ref().lock().request_frame_callback = Some(callback);
      }
  
@@ -162,7 +305,7 @@ index b042825..566f159 100644
      fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
          self.0.as_ref().lock().event_callback = Some(callback);
      }
-@@ -2124,6 +2179,7 @@ impl PlatformWindow for MacWindow {
+@@ -2124,6 +2193,7 @@ impl PlatformWindow for MacWindow {
      fn draw(&self, scene: &gpui::Scene) {
          let mut this = self.0.lock();
          this.renderer.draw(scene);
@@ -170,7 +313,7 @@ index b042825..566f159 100644
      }
  
      fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-@@ -3359,7 +3415,12 @@ extern "C" fn step(view: *mut c_void) {
+@@ -3359,7 +3429,12 @@ extern "C" fn step(view: *mut c_void) {
              signal_source,
              ..Default::default()
          });
@@ -184,7 +327,7 @@ index b042825..566f159 100644
      }
  }
  
-@@ -3680,6 +3741,14 @@ extern "C" fn dragging_session_source_operation_mask(
+@@ -3680,6 +3755,14 @@ extern "C" fn dragging_session_source_operation_mask(
      operation
  }
  

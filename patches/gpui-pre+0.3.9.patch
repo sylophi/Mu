@@ -9,7 +9,54 @@ gpui-pre snapshot has them:
   four fifths of the room, and the start gets the rest (`should_truncate_line_middle` in
   `line_wrapper.rs`). A fixed third often fit only the extension, so numbered names like
   "IMG_0012.jpeg" all looked alike.
+- `App::on_quit_requested` lets the app decide, however long it takes, whether a quit from outside
+  it goes ahead (`app.rs`, `platform.rs`).
 
+diff --git a/src/app.rs b/src/app.rs
+index cdbd559..12b5dd7 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -2731,6 +2731,26 @@ impl App {
+         subscription
+     }
+ 
++    /// Register a callback that decides whether to quit when something outside the app asks it
++    /// to, like the Dock or logging out. The quit waits for the future it returns, and doesn't
++    /// happen if that's false. [`App::quit`] isn't asked about, as the app has decided by then.
++    pub fn on_quit_requested<Fut>(&self, should_quit: impl Fn(&mut App) -> Fut + 'static)
++    where
++        Fut: 'static + Future<Output = bool>,
++    {
++        let cx = self.to_async();
++        let should_quit = Rc::new(should_quit);
++        self.platform.on_quit_requested(Box::new(move |reply| {
++            let should_quit = should_quit.clone();
++            // Not right here, as the platform can ask while the app is borrowed.
++            cx.spawn(async move |cx| {
++                let answer = cx.update(|cx| should_quit(cx));
++                reply(answer.await);
++            })
++            .detach();
++        }));
++    }
++
+     /// Register a callback to be invoked when the application is about to restart.
+     ///
+     /// These callbacks are called before any `on_app_quit` callbacks.
+diff --git a/src/platform.rs b/src/platform.rs
+index c08d964..fbbfdd0 100644
+--- a/src/platform.rs
++++ b/src/platform.rs
+@@ -455,6 +455,9 @@ pub trait Platform: 'static {
+     fn open_with_system(&self, path: &Path);
+ 
+     fn on_quit(&self, callback: Box<dyn FnMut() -> bool>);
++    /// Registers the callback that decides whether a quit from outside the app goes ahead, which
++    /// it says by calling the function it's given.
++    fn on_quit_requested(&self, _callback: Box<dyn FnMut(Box<dyn FnOnce(bool)>)>) {}
+     fn on_reopen(&self, callback: Box<dyn FnMut()>);
+     /// Registers the callback invoked when the system is about to sleep.
+     fn on_system_sleep(&self, callback: Box<dyn FnMut()>);
 diff --git a/src/text_system/line_wrapper.rs b/src/text_system/line_wrapper.rs
 index ca821bb..080f062 100644
 --- a/src/text_system/line_wrapper.rs
