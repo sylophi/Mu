@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Progress, clear_origin, each, move_path, same_volume, trash};
+use super::{Progress, clear_origin, each, move_path, same_volume, split_by_trash, trash_or_delete};
 
 /// What a file operation did: the items it made or moved (to select), how to take it back, and
 /// the first error, if any item failed. It carries on past failures, so whatever did go through
@@ -45,7 +45,7 @@ impl Done {
 pub enum Undo {
     /// Moves each item (from, to), keeping both if `to`'s name has been taken since.
     Move(Vec<(PathBuf, PathBuf)>),
-    /// Moves what an operation made to the Trash, rather than deleting it.
+    /// Moves what an operation made to the Trash, or deletes it on a volume without one.
     Trash(Vec<PathBuf>),
     /// Takes items back out of the Trash (from, to).
     PutBack(Vec<(PathBuf, PathBuf)>),
@@ -54,6 +54,8 @@ pub enum Undo {
     /// Takes back what an operation cleared out of its way, like the items it replaced, which
     /// isn't what it was about.
     Aside(Box<Undo>),
+    /// Nothing, as what an operation made was deleted on a volume without a Trash.
+    Gone,
 }
 
 impl Undo {
@@ -62,6 +64,16 @@ impl Undo {
         match steps.len() {
             0 | 1 => steps.pop(),
             _ => Some(Undo::All(steps)),
+        }
+    }
+
+    /// What applying this deletes for good, for want of a Trash.
+    pub fn doomed(&self) -> Vec<PathBuf> {
+        match self {
+            Undo::Trash(paths) => split_by_trash(paths.clone()).1,
+            Undo::All(steps) => steps.iter().flat_map(Undo::doomed).collect(),
+            Undo::Aside(step) => step.doomed(),
+            Undo::Move(_) | Undo::PutBack(_) | Undo::Gone => Vec::new(),
         }
     }
 }
@@ -79,7 +91,11 @@ impl Undo {
                 let (moved, error) = each(moves, |(from, to)| Ok((from.clone(), move_path(from, to, progress)?)));
                 Done::moved(moved, error)
             }
-            Undo::Trash(paths) => trash(paths),
+            Undo::Trash(paths) => {
+                let done = trash_or_delete(paths);
+                let gone = done.undo.is_none() && done.error.is_none();
+                Done { undo: done.undo.or(gone.then_some(Undo::Gone)), ..done }
+            }
             Undo::PutBack(moves) => {
                 let (restored, error) = each(moves, |(from, to)| {
                     let restored = move_path(from, to, progress)?;
@@ -107,6 +123,7 @@ impl Undo {
                 let done = step.apply(progress);
                 Done { undo: done.undo.map(|undo| Undo::Aside(Box::new(undo))), ..done }
             }
+            Undo::Gone => Done::default(),
         }
     }
 }

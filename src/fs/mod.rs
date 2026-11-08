@@ -42,7 +42,10 @@ pub use names::{
     typed_path,
 };
 pub use ops::{Cancelled, Progress, copyfile, new_file, new_folder, remove_all, rename, save};
-pub use trash::{Origins, empty_trash, is_locked, is_restricted, put_back, set_origin, trash, trash_dirs, trash_items};
+pub use trash::{
+    Origins, delete, empty_trash, is_locked, is_restricted, put_back, set_origin, split_by_trash, trash_dirs,
+    trash_items, trash_or_delete,
+};
 pub use undo::{Done, Undo};
 pub use using::{Holder, holders, names, running_in};
 pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, same_volume, volume_root, volumes};
@@ -50,7 +53,8 @@ pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, sam
 use apps::alias_target;
 use kinds::describe;
 use ops::{copy_path, delete_path, disk_name, each, move_path, unique_path};
-use trash::{clear_origin, trash_one};
+use trash::{clear_origin, delete_one, lacks_trash, trash_one};
+use volumes::{holds_volume, is_network, is_read_only};
 
 pub fn c_path(path: &Path) -> io::Result<CString> {
     Ok(CString::new(path.as_os_str().as_bytes())?)

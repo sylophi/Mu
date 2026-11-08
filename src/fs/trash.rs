@@ -14,14 +14,15 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use objc2::rc::autoreleasepool;
-use objc2_foundation::NSFileManager;
+use objc2_foundation::{NSFileManager, NSSearchPathDirectory, NSSearchPathDomainMask};
 
 use super::{
-    Done, Progress, Undo,
+    Cancelled, Done, Progress, Undo,
     admin::{self, Step},
     c_path, delete_path, disk_name, display_name,
     ds_store::{records, text},
-    each, file_url, read_dirs, same_volume, trash_dir, unique_path, volumes, xattr,
+    each, file_url, holds_volume, is_read_only, read_dirs, same_volume, trash_dir, unique_path, volume_root, volumes,
+    xattr,
 };
 
 /// The Trashes Finder shows as one: the startup disk's, then each other disk's. A disk's holds what
@@ -123,6 +124,36 @@ pub(super) fn clear_origin(path: &Path) {
     }
 }
 
+/// Splits `paths` into those that can go in the Trash and those on a volume without one, which can
+/// only be deleted, as on a share from another computer.
+pub fn split_by_trash(paths: Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut lacking = HashMap::new();
+    paths.into_iter().partition(|path| {
+        // Its folder, as asking about a symlink would ask about what it points to.
+        let dir = path.parent().unwrap_or(path).to_path_buf();
+        !*lacking.entry(dir).or_insert_with_key(|dir| lacks_trash(dir))
+    })
+}
+
+/// Whether the volume `dir` is on has no Trash. macOS only says so of a volume's top: anywhere else
+/// on a disk, it says the same as for a share. It makes the disk's Trash if it's yet to have one,
+/// or it wouldn't tell them apart either. A read-only volume has none, but nothing goes from it
+/// anyway.
+pub(super) fn lacks_trash(dir: &Path) -> bool {
+    const NS_FEATURE_UNSUPPORTED_ERROR: isize = 3328;
+    let Some(root) = volume_root(dir).filter(|_| !is_read_only(dir)) else { return false };
+    autoreleasepool(|_| {
+        NSFileManager::defaultManager()
+            .URLForDirectory_inDomain_appropriateForURL_create_error(
+                NSSearchPathDirectory::TrashDirectory,
+                NSSearchPathDomainMask::UserDomainMask,
+                Some(&file_url(&root)),
+                true,
+            )
+            .is_err_and(|error| error.code() == NS_FEATURE_UNSUPPORTED_ERROR)
+    })
+}
+
 /// Moves `paths` to the Trash through the system, which says where each one landed so it can be
 /// put back.
 pub fn trash(paths: &[PathBuf]) -> Done {
@@ -188,6 +219,52 @@ fn set_locked(path: &Path, locked: bool) -> Result<()> {
     Ok(())
 }
 
+/// Moves `paths` to the Trash, and deletes for good those on a volume without one. Callers warn
+/// about those first.
+pub fn trash_or_delete(paths: &[PathBuf]) -> Done {
+    let (trashable, doomed) = split_by_trash(paths.to_vec());
+    let trashed = trash(&trashable);
+    // Turned down an administrator's password: nothing more goes, least of all for good.
+    if trashed.error.as_ref().is_some_and(|error| error.is::<Cancelled>()) {
+        return trashed;
+    }
+    let deleted = delete(&doomed);
+    Done { error: trashed.error.or(deleted.error), ..trashed }
+}
+
+/// Deletes `paths` for good, even what's locked, but never a whole disk.
+pub fn delete(paths: &[PathBuf]) -> Done {
+    let (_, error) =
+        each(paths, |path| delete_one(path).with_context(|| format!("Couldn't delete “{}”", display_name(path))));
+    Done { error, ..Done::default() }
+}
+
+pub(super) fn delete_one(path: &Path) -> Result<()> {
+    if holds_volume(path) {
+        bail!("it's a disk, or has one in it");
+    }
+    let Err(error) = delete_path(path) else { return Ok(()) };
+    // What a locked item fails with.
+    if error.downcast_ref::<io::Error>().and_then(io::Error::raw_os_error) != Some(libc::EPERM) {
+        return Err(error);
+    }
+    unlock_all(path)?;
+    delete_path(path)
+}
+
+/// Unlocks `path` and everything in it.
+fn unlock_all(path: &Path) -> Result<()> {
+    if is_locked(path) {
+        set_locked(path, false)?;
+    }
+    if fs::symlink_metadata(path)?.is_dir() {
+        for entry in fs::read_dir(path)? {
+            unlock_all(&entry?.path())?;
+        }
+    }
+    Ok(())
+}
+
 /// Moves items in the Trash back to where they came from.
 pub fn put_back(paths: &[PathBuf]) -> Done {
     let mut origins = Origins::default();
@@ -246,6 +323,42 @@ mod tests {
         assert!(trashed.error.is_none() && !locked.exists());
         assert!(trashed.undo.unwrap().apply(&Progress::default()).error.is_none());
         assert!(locked.exists() && !is_locked(&locked));
+    }
+
+    #[test]
+    fn delete_goes_through_locks() {
+        let scratch = Scratch::new("delete");
+        let dir = &scratch.0;
+        let lock = |path: &Path| set_locked(path, true).unwrap();
+
+        fs::write(dir.join("a.txt"), "a").unwrap();
+        let locked = dir.join("locked.txt");
+        fs::write(&locked, "").unwrap();
+        lock(&locked);
+        let folder = dir.join("folder");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("inside.txt"), "").unwrap();
+        lock(&folder.join("inside.txt"));
+        lock(&folder);
+
+        let done = delete(&[dir.join("a.txt"), locked, folder]);
+        assert!(done.error.is_none() && done.undo.is_none());
+        assert!(names(dir).is_empty());
+
+        assert!(delete(&[dir.join("missing")]).error.is_some());
+    }
+
+    #[test]
+    fn disks_are_told_from_folders() {
+        assert!(holds_volume(Path::new("/")) && holds_volume(Path::new("/System/Volumes")));
+        assert!(!holds_volume(&Scratch::new("holds-volume").0));
+    }
+
+    #[test]
+    fn a_folder_on_a_disk_can_use_the_trash() {
+        let scratch = Scratch::new("split");
+        let a = scratch.0.join("a.txt");
+        assert_eq!(split_by_trash(vec![a.clone()]), (vec![a], Vec::new()));
     }
 
     #[test]

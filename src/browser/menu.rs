@@ -10,9 +10,9 @@ use gpui_kit::component::{
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
 use super::{
-    AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, DownloadNow, Duplicate, NewFolder, Open, OpenInEditor,
-    OpenInNewTab, OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, RemoveDownload, Rename,
-    ShowPackageContents, Trash, Uninstall, listing::SortKey,
+    AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, DeleteImmediately, DownloadNow, Duplicate, NewFolder, Open,
+    OpenInEditor, OpenInNewTab, OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, RemoveDownload,
+    Rename, ShowPackageContents, Trash, Uninstall, listing::SortKey,
 };
 use crate::{
     fs::{self, Entry},
@@ -146,6 +146,9 @@ impl Browser {
             menu.menu_with_icon("Add to Sidebar", IconName::PanelLeft, Box::new(AddToSidebar))
         })
         .when(!in_trash && !app_folder, |menu| menu.menu_with_icon("Move to Trash", IconName::Trash, Box::new(Trash)))
+        .when(!app_folder, |menu| {
+            menu.menu_with_icon("Delete Immediately…", IconName::Trash, Box::new(DeleteImmediately))
+        })
         .when(app, |menu| menu.menu_with_icon("Uninstall…", IconName::PackageX, Box::new(Uninstall)))
     }
 }

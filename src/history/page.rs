@@ -102,15 +102,17 @@ impl HistoryPage {
                             .disabled(current.is_empty())
                             .on_click(cx.listener(move |_, _, _, cx| cx.emit(TabEvent::Reveal(current.clone())))),
                     )
-                    .child(
-                        Button::new(("take-back", id))
-                            .small()
-                            .w(px(64.))
-                            .label(if change.undone { "Redo" } else { "Undo" })
-                            .loading(running == Some(id))
-                            .disabled(running.is_some())
-                            .on_click(move |_, window, cx| history::toggle(id, window, cx).detach()),
-                    ),
+                    .when(!change.gone(), |row| {
+                        row.child(
+                            Button::new(("take-back", id))
+                                .small()
+                                .w(px(64.))
+                                .label(if change.undone { "Redo" } else { "Undo" })
+                                .loading(running == Some(id))
+                                .disabled(running.is_some())
+                                .on_click(move |_, window, cx| history::toggle(id, window, cx).detach()),
+                        )
+                    }),
             )
     }
 }

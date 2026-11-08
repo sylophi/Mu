@@ -244,7 +244,22 @@ impl Browser {
         if self.in_trash() {
             return self.put_back(window, cx);
         }
-        // Like Explorer, the cursor lands on whatever follows the trashed items, and what's in them.
+        let task = operations::trash(paths, window, cx);
+        self.settle_removal(task, window, cx);
+    }
+
+    /// Deletes the selection for good, Trash or not, once it's warned that can't be undone.
+    pub(super) fn delete_immediately(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.changeable_paths();
+        if !paths.is_empty() {
+            let task = operations::delete(paths, window, cx);
+            self.settle_removal(task, window, cx);
+        }
+    }
+
+    /// Settles `task`, which takes the selection away. Like Explorer, the cursor lands on whatever
+    /// follows it, and what's in it.
+    fn settle_removal(&mut self, task: Task<Option<Done>>, window: &mut Window, cx: &mut Context<Self>) {
         let goes = |key: &str| self.selection.contains(key) || self.in_selected_folder(key);
         let after = self
             .listing
@@ -253,7 +268,6 @@ impl Browser {
             .find(|item| !goes(&item.key))
             .or_else(|| self.listing.iter().rev().find(|item| !goes(&item.key)))
             .map(|item| item.entry.path.clone());
-        let task = operations::trash(paths, window, cx);
         let task = cx.spawn(async move |_, _| Some(Done { paths: after.into_iter().collect(), ..task.await? }));
         self.settle(task, false, window, cx).detach();
     }

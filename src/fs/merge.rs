@@ -11,14 +11,15 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 
 use super::{
-    Done, Progress, Undo, copy_path, disk_name, display_name, each, icloud, is_package, move_path, natural_cmp,
-    same_volume, trash, trash_one, unique_path,
+    Done, Progress, Undo, copy_path, delete_one, disk_name, display_name, each, icloud, is_package, lacks_trash,
+    move_path, natural_cmp, same_volume, trash_one, trash_or_delete, unique_path,
 };
 
 /// What to do about an item copied or moved in whose name is taken there.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Choice {
-    /// What's there goes to the Trash, and the item takes its place.
+    /// What's there goes to the Trash, or for good on a volume without one, and the item takes
+    /// its place.
     Replace,
     /// The item stays where it was, and so does what's there.
     Skip,
@@ -101,16 +102,19 @@ struct Merge<'a> {
     /// Folders a move emptied, which go to the Trash once it's done, so their own details come
     /// back with them.
     shells: Vec<PathBuf>,
+    /// What's making way for the item on its way (where it's waiting, and where it was), on a
+    /// volume without a Trash. It's only deleted once the item is there.
+    aside: Option<(PathBuf, PathBuf)>,
 }
 
 impl<'a> Merge<'a> {
     fn new(choices: &'a Choices, progress: &'a Progress) -> Self {
         let (made, moved, replaced, shells) = Default::default();
-        Self { choices, progress, counted: true, made, moved, replaced, shells }
+        Self { choices, progress, counted: true, made, moved, replaced, shells, aside: None }
     }
 
-    /// Where `from` goes for `to`: `to` itself when it's free or once what's there is in the Trash,
-    /// a free name beside it, or nowhere when it's skipped.
+    /// Where `from` goes for `to`: `to` itself when it's free or once what's there has made way, a
+    /// free name beside it, or nowhere when it's skipped.
     fn target(&mut self, from: &Path, to: &Path) -> Result<Option<PathBuf>> {
         if fs::symlink_metadata(to).is_err() {
             return Ok(Some(to.to_path_buf()));
@@ -125,10 +129,25 @@ impl<'a> Merge<'a> {
             }
             Choice::KeepBoth => Ok(Some(unique_path(dir, &disk_name(to).to_string_lossy(), false))),
             Choice::Replace => {
-                self.replaced.push((trash_one(to)?, to.to_path_buf()));
+                if lacks_trash(dir) {
+                    let aside = unique_path(dir, ".mu-replaced", false);
+                    fs::rename(to, &aside).with_context(|| format!("Couldn't replace “{}”", display_name(to)))?;
+                    self.aside = Some((aside, to.to_path_buf()));
+                } else {
+                    self.replaced.push((trash_one(to)?, to.to_path_buf()));
+                }
                 Ok(Some(to.to_path_buf()))
             }
         }
+    }
+
+    /// Deletes what made way for the item now it's `landed`, or puts it back if it didn't.
+    fn settle(&mut self, landed: bool) -> Result<()> {
+        let Some((aside, to)) = self.aside.take() else { return Ok(()) };
+        if landed {
+            return delete_one(&aside);
+        }
+        fs::rename(aside, &to).with_context(|| format!("Couldn't put “{}” back", display_name(&to)))
     }
 
     /// Copies `from` to `to`, merging folders. Says where it went, unless it was skipped.
@@ -139,7 +158,9 @@ impl<'a> Merge<'a> {
             return error.map_or(Ok(Some(to.to_path_buf())), Err);
         }
         let Some(target) = self.target(from, to)? else { return Ok(None) };
-        copy_path(from, &target, self.progress)?;
+        let copied = copy_path(from, &target, self.progress);
+        self.settle(copied.is_ok())?;
+        copied?;
         self.made.push(target.clone());
         Ok(Some(target))
     }
@@ -149,7 +170,9 @@ impl<'a> Merge<'a> {
         self.progress.check()?;
         if !merges(from, to) {
             let Some(target) = self.target(from, to)? else { return Ok(Left::Items) };
-            let landed = move_path(from, &target, self.progress)?;
+            let landed = move_path(from, &target, self.progress);
+            self.settle(landed.is_ok())?;
+            let landed = landed?;
             self.moved.push((landed.clone(), from.to_path_buf()));
             return Ok(Left::Gone(landed));
         }
@@ -168,7 +191,7 @@ impl<'a> Merge<'a> {
     /// first to move items back into, and what was replaced comes back last, once its place is
     /// free again.
     fn done(self, paths: Vec<PathBuf>, error: Option<anyhow::Error>) -> Done {
-        let emptied = trash(&self.shells);
+        let emptied = trash_or_delete(&self.shells);
         let steps = [
             emptied.undo.map(|undo| Undo::Aside(Box::new(undo))),
             (!self.made.is_empty()).then_some(Undo::Trash(self.made)),
@@ -219,7 +242,8 @@ pub fn duplicate(sources: &[PathBuf], progress: &Progress) -> Done {
 }
 
 /// Moves `sources` into `dir`. Folders merge into folders with their names there, like Windows,
-/// and each clash goes as `choices` says. A folder that's emptied goes to the Trash.
+/// and each clash goes as `choices` says. A folder that's emptied goes to the Trash, or for good
+/// on a volume without one.
 pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
     progress.expect(sources.iter().filter(|source| !same_volume(source, dir)));
     let mut merge = Merge::new(choices, progress);
@@ -248,6 +272,25 @@ pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
 mod tests {
     use super::*;
     use crate::fs::{Cancelled, Scratch, tests::names};
+
+    #[test]
+    fn what_makes_way_goes_only_once_the_item_is_there() {
+        let scratch = Scratch::new("settle");
+        let (aside, to) = (scratch.0.join(".aside"), scratch.0.join("a.txt"));
+        let (choices, progress) = (Choices::new(), Progress::default());
+        let mut merge = Merge::new(&choices, &progress);
+
+        fs::write(&aside, "old").unwrap();
+        merge.aside = Some((aside.clone(), to.clone()));
+        merge.settle(false).unwrap();
+        assert_eq!(fs::read_to_string(&to).unwrap(), "old");
+        assert!(!aside.exists());
+
+        fs::write(&aside, "old").unwrap();
+        merge.aside = Some((aside.clone(), to.clone()));
+        merge.settle(true).unwrap();
+        assert!(!aside.exists() && to.exists());
+    }
 
     #[test]
     fn duplicates_each_next_to_itself() {

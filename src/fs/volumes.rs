@@ -32,10 +32,19 @@ pub fn is_network(path: &Path) -> bool {
     statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_LOCAL as u32 == 0)
 }
 
+/// Whether the volume `path` is on can only be read.
+pub(super) fn is_read_only(path: &Path) -> bool {
+    statfs(path).is_some_and(|stat| stat.f_flags & libc::MNT_RDONLY as u32 != 0)
+}
+
+/// Where `mount` is mounted.
+fn mounted_on(mount: &libc::statfs) -> PathBuf {
+    PathBuf::from(OsStr::from_bytes(unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes()))
+}
+
 /// Where the volume `path` is on is mounted.
 pub fn volume_root(path: &Path) -> Option<PathBuf> {
-    let stat = statfs(path)?;
-    Some(PathBuf::from(OsStr::from_bytes(unsafe { CStr::from_ptr(stat.f_mntonname.as_ptr()) }.to_bytes())))
+    statfs(path).map(|stat| mounted_on(&stat))
 }
 
 /// What the volume at `path` is mounted from, like a disk's device or a share's address.
@@ -59,17 +68,11 @@ pub struct Volume {
 pub fn volumes() -> Vec<Volume> {
     let root = PathBuf::from("/");
     let mut volumes = vec![Volume { name: display_name(&root).into(), path: root, network: false }];
-    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-    let mut mounts = vec![unsafe { std::mem::zeroed::<libc::statfs>() }; count.max(0) as usize];
-    let size = (mounts.len() * size_of::<libc::statfs>()) as i32;
-    let count = unsafe { libc::getfsstat(mounts.as_mut_ptr(), size, libc::MNT_NOWAIT) };
-    mounts.truncate(count.max(0) as usize);
-    let mut found: Vec<_> = mounts
+    let mut found: Vec<_> = mounts()
         .iter()
         .filter(|mount| mount.f_flags & libc::MNT_DONTBROWSE as u32 == 0)
         .filter_map(|mount| {
-            let path =
-                PathBuf::from(OsStr::from_bytes(unsafe { CStr::from_ptr(mount.f_mntonname.as_ptr()) }.to_bytes()));
+            let path = mounted_on(mount);
             (path.parent() == Some(Path::new("/Volumes"))).then(|| Volume {
                 name: display_name(&path).into(),
                 path,
@@ -80,6 +83,21 @@ pub fn volumes() -> Vec<Volume> {
     found.sort_by(|a, b| natural_cmp(&a.name, &b.name));
     volumes.extend(found);
     volumes
+}
+
+/// Everything mounted, from what macOS already knows, without asking again.
+fn mounts() -> Vec<libc::statfs> {
+    let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    let mut mounts = vec![unsafe { std::mem::zeroed::<libc::statfs>() }; count.max(0) as usize];
+    let size = (mounts.len() * size_of::<libc::statfs>()) as i32;
+    let count = unsafe { libc::getfsstat(mounts.as_mut_ptr(), size, libc::MNT_NOWAIT) };
+    mounts.truncate(count.max(0) as usize);
+    mounts
+}
+
+/// Whether `path` is where a volume is mounted, or has one mounted somewhere in it.
+pub(super) fn holds_volume(path: &Path) -> bool {
+    mounts().iter().any(|mount| mounted_on(mount).starts_with(path))
 }
 
 pub fn same_volume(a: &Path, b: &Path) -> bool {
