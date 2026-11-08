@@ -288,6 +288,15 @@ pub fn new_file(dir: &Path, name: &str, bytes: &[u8]) -> Done {
     }
 }
 
+/// Saves `bytes` to the file at `path`, as an administrator if need be.
+pub fn save(path: &Path, bytes: &[u8]) -> Result<()> {
+    admin::session(|| {
+        fs::write(path, bytes)
+            .or_else(|error| admin::retry(error, Step::Save(path.into(), bytes.to_vec())))
+            .with_context(|| format!("Couldn't save “{}”", display_name(path)))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
