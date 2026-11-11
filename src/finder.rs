@@ -1,4 +1,4 @@
-//! Brings over what you've set up in Finder: its sidebar's favorites and how it shows folders. And
+//! Brings over what you've set up in Finder: its sidebar's folders and how it shows them. And
 //! stands in for it when other apps show files in Finder.
 
 use std::{
@@ -22,8 +22,9 @@ use crate::{
     settings::Settings,
 };
 
-/// Makes Mu's favorites, hidden files, panes and view match Finder's. Resolves to how many
-/// favorites came over. Reading Finder's sidebar takes Full Disk Access.
+/// Makes the items in Mu's sidebar outside any group, hidden files, panes and view match Finder's.
+/// A folder that comes over leaves any group it was in. Resolves to how many items came over.
+/// Reading Finder's sidebar takes Full Disk Access.
 pub fn import(cx: &mut App) -> io::Result<usize> {
     let favorites = favorites()?;
     let finder = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(ns_string!("com.apple.finder")))
@@ -36,7 +37,8 @@ pub fn import(cx: &mut App) -> io::Result<usize> {
     let grid = finder.stringForKey(ns_string!("FXPreferredViewStyle")).map(|style| style.to_string() == "icnv");
     let count = favorites.len();
     Settings::update(cx, |settings| {
-        settings.favorites = favorites;
+        settings.sidebar_items.clear();
+        settings.place_in_sidebar(None, 0, &favorites);
         settings.show_hidden = show_hidden.unwrap_or(settings.show_hidden);
         settings.show_sidebar = show_sidebar.unwrap_or(settings.show_sidebar);
         settings.show_preview = show_preview.unwrap_or(settings.show_preview);

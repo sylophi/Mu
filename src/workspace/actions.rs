@@ -435,7 +435,7 @@ impl Workspace {
                 self.show_preview(preview, cx);
                 Notification::success(format!(
                     "Brought over {} and how Finder shows folders.",
-                    fs::count(count, "favorite", "favorites")
+                    fs::count(count, "sidebar item", "sidebar items")
                 ))
             }
             Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
