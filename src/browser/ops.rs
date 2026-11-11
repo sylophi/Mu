@@ -391,8 +391,8 @@ impl Browser {
         };
         Settings::update(cx, |settings| {
             for dir in dirs {
-                if !settings.is_favorite(&dir) {
-                    settings.favorites.push(dir);
+                if !settings.in_sidebar(&dir) {
+                    settings.sidebar_items.push(dir);
                 }
             }
         });

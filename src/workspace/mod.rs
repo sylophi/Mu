@@ -46,7 +46,7 @@ use actions::ShowSettings;
 use docks::Docks;
 use item::Item;
 use path_bar::PathEditor;
-use sidebar::{DraggedFavorite, Sidebar};
+use sidebar::{DraggedSidebarItem, GroupRename, Sidebar, Slot};
 use status_bar::Meters;
 use tab_list::TabList;
 use tabs::{DraggedTab, TabDrag};
@@ -114,8 +114,12 @@ pub struct Workspace {
     /// The path bar's width as of the last frame, which decides how much of the path fits.
     path_bar_width: Pixels,
     filter: Entity<InputState>,
-    /// Where in Favorites letting go of what's dragged over them would put it.
-    favorite_drop: Option<usize>,
+    /// Where among the added items letting go of what's dragged over them would put it.
+    sidebar_drop: Option<Slot>,
+    /// Where among the sidebar's groups letting go of the one dragged would put it.
+    group_drop: Option<usize>,
+    /// The sidebar group whose name is being edited.
+    group_rename: Option<GroupRename>,
     /// Whether files are being dragged, which the shelf comes out for.
     dragging_files: bool,
     _subscriptions: Vec<Subscription>,
@@ -176,7 +180,9 @@ impl Workspace {
             path_editor: None,
             path_bar_width: px(0.),
             filter,
-            favorite_drop: None,
+            sidebar_drop: None,
+            group_drop: None,
+            group_rename: None,
             dragging_files: false,
             _subscriptions: subscriptions,
         };
@@ -297,9 +303,9 @@ impl Render for Workspace {
                 let drop = this.folder_drop(event.event.position, event.drag(cx).paths());
                 this.set_tab_drop(drop, cx);
             }))
-            // A favorite let go of anywhere but the sidebar comes out of it.
-            .on_drop(|favorite: &DraggedFavorite, _, cx| {
-                Settings::update(cx, |settings| settings.favorites.retain(|path| path != &favorite.path))
+            // An item let go of anywhere but the sidebar comes out of it.
+            .on_drop(|item: &DraggedSidebarItem, _, cx| {
+                Settings::update(cx, |settings| settings.remove_from_sidebar(std::slice::from_ref(&item.path)))
             })
             .child(self.render_title_bar(cx))
             .child(div().flex_1().min_h_0().child(main))

@@ -24,6 +24,7 @@ Mu needs macOS 27 on a Mac with Apple silicon.
 - Type-to-select, ⇧-click and ⌘-click selection, and box selection
 - The Trash with Put Back
 - Folders that merge when copied onto ones with the same name, and a choice for each file that's in the way
+- A sidebar for the folders you add to it, in groups that collapse
 - A shelf to set files aside while you find where they go
 - Other apps' Show in Finder can show files in Mu instead
 - Disk images laid out as Finder shows them, ready to drag the app onto Applications

@@ -235,7 +235,7 @@ impl Render for SettingsPage {
                 )
                 .child(setting(
                     "Finder",
-                    about("Bring over its sidebar favorites, hidden files, panes and view.", cx),
+                    about("Bring over its sidebar, hidden files, panes and view.", cx),
                     Button::new("import-finder")
                         .outline()
                         .label("Import")

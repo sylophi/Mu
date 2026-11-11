@@ -20,7 +20,10 @@ pub struct Settings {
     pub grid: bool,
     /// Whether the list shows what's in the folders in it, under them, as far as it has room.
     pub smart_expansion: bool,
-    pub favorites: Vec<PathBuf>,
+    /// The folders added to the sidebar outside any group.
+    #[serde(alias = "favorites")]
+    pub sidebar_items: Vec<PathBuf>,
+    pub sidebar_groups: Vec<SidebarGroup>,
     /// How wide the list's Name, Date Modified, Size and Kind columns are.
     pub column_widths: [Pixels; 4],
     /// How wide the sidebar and the preview are in new windows, as in the last window to change them.
@@ -40,6 +43,14 @@ impl Global for Settings {}
 /// The list's column widths to begin with, which a double click on a column's divider goes back to.
 pub const COLUMN_WIDTHS: [Pixels; 4] = [px(280.), px(170.), px(80.), px(150.)];
 
+/// Folders added to the sidebar under a heading of their own.
+#[derive(Serialize, Deserialize)]
+pub struct SidebarGroup {
+    pub name: String,
+    pub collapsed: bool,
+    pub items: Vec<PathBuf>,
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct DockWidths {
     pub sidebar: Pixels,
@@ -58,13 +69,14 @@ impl Default for Settings {
             show_preview: false,
             grid: false,
             smart_expansion: true,
-            favorites: vec![
+            sidebar_items: vec![
                 home.clone(),
                 home.join("Desktop"),
                 home.join("Documents"),
                 home.join("Downloads"),
                 "/Applications".into(),
             ],
+            sidebar_groups: Vec::new(),
             column_widths: COLUMN_WIDTHS,
             dock_widths: DOCK_WIDTHS,
             tint: false,
@@ -115,16 +127,48 @@ impl Settings {
         });
     }
 
-    pub fn is_favorite(&self, path: &Path) -> bool {
-        self.favorites.iter().any(|favorite| favorite == path)
+    pub fn in_sidebar(&self, path: &Path) -> bool {
+        self.sidebar_items.iter().chain(self.sidebar_groups.iter().flat_map(|group| &group.items)).any(|p| p == path)
     }
 
-    /// Puts `dirs` in Favorites before the one at `ix`, moving any that are there already.
-    pub fn place_favorites(&mut self, ix: usize, dirs: &[PathBuf]) {
-        let ix = ix.min(self.favorites.len());
-        let ix = ix - self.favorites[..ix].iter().filter(|favorite| dirs.contains(favorite)).count();
-        self.favorites.retain(|favorite| !dirs.contains(favorite));
-        self.favorites.splice(ix..ix, dirs.iter().cloned());
+    /// The folders in `group`, or outside any group.
+    pub fn sidebar_list(&self, group: Option<usize>) -> &[PathBuf] {
+        match group {
+            Some(group) => &self.sidebar_groups[group].items,
+            None => &self.sidebar_items,
+        }
+    }
+
+    pub fn remove_from_sidebar(&mut self, paths: &[PathBuf]) {
+        self.sidebar_items.retain(|item| !paths.contains(item));
+        for group in &mut self.sidebar_groups {
+            group.items.retain(|item| !paths.contains(item));
+        }
+    }
+
+    /// Puts `dirs` in `group` before the one at `ix`, moving any that are in the sidebar already.
+    pub fn place_in_sidebar(&mut self, group: Option<usize>, ix: usize, dirs: &[PathBuf]) {
+        let list = self.sidebar_list(group);
+        let ix = ix.min(list.len());
+        let ix = ix - list[..ix].iter().filter(|item| dirs.contains(item)).count();
+        self.remove_from_sidebar(dirs);
+        let list = match group {
+            Some(group) => &mut self.sidebar_groups[group].items,
+            None => &mut self.sidebar_items,
+        };
+        list.splice(ix..ix, dirs.iter().cloned());
+    }
+
+    /// Takes away the group at `ix`, leaving its folders in the sidebar outside any group.
+    pub fn remove_sidebar_group(&mut self, ix: usize) {
+        let group = self.sidebar_groups.remove(ix);
+        self.sidebar_items.extend(group.items);
+    }
+
+    /// Moves the group at `from` to before the one that's at `to`.
+    pub fn move_sidebar_group(&mut self, from: usize, to: usize) {
+        let group = self.sidebar_groups.remove(from);
+        self.sidebar_groups.insert(if to > from { to - 1 } else { to }, group);
     }
 }
 
@@ -132,19 +176,69 @@ impl Settings {
 mod tests {
     use std::path::PathBuf;
 
-    use super::Settings;
+    use super::{Settings, SidebarGroup};
+
+    fn paths(names: &str) -> Vec<PathBuf> {
+        names.chars().map(|name| PathBuf::from(name.to_string())).collect()
+    }
+
+    fn group(name: &str, items: &str) -> SidebarGroup {
+        SidebarGroup { name: name.to_string(), collapsed: false, items: paths(items) }
+    }
 
     #[test]
-    fn places_favorites() {
-        let paths = |names: &str| names.chars().map(|name| PathBuf::from(name.to_string())).collect::<Vec<_>>();
-        let mut settings = Settings { favorites: paths("abcd"), ..Settings::default() };
-        settings.place_favorites(3, &paths("a"));
-        assert_eq!(settings.favorites, paths("bcad"));
-        settings.place_favorites(0, &paths("d"));
-        assert_eq!(settings.favorites, paths("dbca"));
-        settings.place_favorites(2, &paths("xa"));
-        assert_eq!(settings.favorites, paths("dbxac"));
-        settings.place_favorites(9, &paths("b"));
-        assert_eq!(settings.favorites, paths("dxacb"));
+    fn places_in_the_sidebar() {
+        let mut settings = Settings { sidebar_items: paths("abcd"), ..Settings::default() };
+        settings.place_in_sidebar(None, 3, &paths("a"));
+        assert_eq!(settings.sidebar_items, paths("bcad"));
+        settings.place_in_sidebar(None, 0, &paths("d"));
+        assert_eq!(settings.sidebar_items, paths("dbca"));
+        settings.place_in_sidebar(None, 2, &paths("xa"));
+        assert_eq!(settings.sidebar_items, paths("dbxac"));
+        settings.place_in_sidebar(None, 9, &paths("b"));
+        assert_eq!(settings.sidebar_items, paths("dxacb"));
+    }
+
+    #[test]
+    fn places_between_groups() {
+        let mut settings = Settings {
+            sidebar_items: paths("ab"),
+            sidebar_groups: vec![group("one", "cd"), group("two", "e")],
+            ..Settings::default()
+        };
+        settings.place_in_sidebar(Some(1), 1, &paths("a"));
+        assert_eq!(settings.sidebar_items, paths("b"));
+        assert_eq!(settings.sidebar_groups[1].items, paths("ea"));
+        settings.place_in_sidebar(Some(0), 1, &paths("ed"));
+        assert_eq!(settings.sidebar_groups[0].items, paths("ced"));
+        assert_eq!(settings.sidebar_groups[1].items, paths("a"));
+        settings.place_in_sidebar(None, 0, &paths("c"));
+        assert_eq!(settings.sidebar_items, paths("cb"));
+        assert_eq!(settings.sidebar_groups[0].items, paths("ed"));
+    }
+
+    #[test]
+    fn removing_a_group_keeps_its_items() {
+        let mut settings = Settings {
+            sidebar_items: paths("a"),
+            sidebar_groups: vec![group("one", "bc"), group("two", "d")],
+            ..Settings::default()
+        };
+        settings.remove_sidebar_group(0);
+        assert_eq!(settings.sidebar_items, paths("abc"));
+        assert_eq!(settings.sidebar_groups.len(), 1);
+    }
+
+    #[test]
+    fn moves_groups() {
+        let names = |settings: &Settings| settings.sidebar_groups.iter().map(|g| g.name.clone()).collect::<String>();
+        let mut settings =
+            Settings { sidebar_groups: vec![group("a", ""), group("b", ""), group("c", "")], ..Settings::default() };
+        settings.move_sidebar_group(0, 2);
+        assert_eq!(names(&settings), "bac");
+        settings.move_sidebar_group(2, 0);
+        assert_eq!(names(&settings), "cba");
+        settings.move_sidebar_group(0, 3);
+        assert_eq!(names(&settings), "bac");
     }
 }
