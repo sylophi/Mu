@@ -26,7 +26,9 @@ use crate::{
 /// A folder that comes over leaves any group it was in. Resolves to how many items came over.
 /// Reading Finder's sidebar takes Full Disk Access.
 pub fn import(cx: &mut App) -> io::Result<usize> {
-    let favorites = favorites()?;
+    // Finder keeps iCloud Drive in a list of its own, which goes after Favorites.
+    let mut favorites = sidebar_list("FavoriteItems")?;
+    favorites.extend(sidebar_list("iCloudItems").unwrap_or_default());
     let finder = NSUserDefaults::initWithSuiteName(NSUserDefaults::alloc(), Some(ns_string!("com.apple.finder")))
         .ok_or(io::ErrorKind::NotFound)?;
     // Only what Finder has a setting for. The rest stays as it is.
@@ -47,14 +49,12 @@ pub fn import(cx: &mut App) -> io::Result<usize> {
     Ok(count)
 }
 
-/// The folders in Finder's sidebar under Favorites, in its order. It keeps them as bookmarks in a
-/// keyed archive. Recents, AirDrop and the like aren't folders, and iCloud Drive has its own place
-/// in Mu's sidebar, so those stay out.
-fn favorites() -> io::Result<Vec<PathBuf>> {
+/// The folders in one of the lists in Finder's sidebar, like Favorites, in its order. It keeps them
+/// as bookmarks in a keyed archive. Recents, AirDrop and the like aren't folders, so those stay out.
+fn sidebar_list(name: &str) -> io::Result<Vec<PathBuf>> {
     let list = home_dir()
-        .join("Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.FavoriteItems.sfl4");
+        .join(format!("Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.{name}.sfl4"));
     let bytes = fs::read(list)?;
-    let icloud = files::icloud_drive();
     autoreleasepool(|_| {
         let data = NSData::with_bytes(&bytes);
         // Not secure coding: the archive holds plain dictionaries, arrays, data and numbers.
@@ -73,9 +73,23 @@ fn favorites() -> io::Result<Vec<PathBuf>> {
                     .objectForKey(ns_string!("visibility"))
                     .and_then(|visibility| visibility.downcast::<NSNumber>().ok())
                     .is_some_and(|visibility| visibility.integerValue() != 0);
-                let bookmark = item.objectForKey(ns_string!("Bookmark"))?.downcast::<NSData>().ok()?;
-                let path = files::bookmark_target(&bookmark)?;
-                (!hidden && path.is_dir() && !is_canned(&path) && path != icloud).then_some(path)
+                // iCloud Drive's bookmark doesn't lead to it.
+                let icloud = item
+                    .objectForKey(ns_string!("CustomItemProperties"))
+                    .and_then(|properties| properties.downcast::<NSDictionary>().ok())
+                    .and_then(|properties| {
+                        properties.objectForKey(ns_string!("com.apple.LSSharedFileList.SpecialItemIdentifier"))
+                    })
+                    .and_then(|id| id.downcast::<NSString>().ok())
+                    .is_some_and(|id| id.to_string() == "com.apple.LSSharedFileList.IsICloudDrive");
+                let path = match icloud {
+                    true => files::icloud_drive(),
+                    false => {
+                        let bookmark = item.objectForKey(ns_string!("Bookmark"))?.downcast::<NSData>().ok()?;
+                        files::bookmark_target(&bookmark)?
+                    }
+                };
+                (!hidden && path.is_dir() && !is_canned(&path)).then_some(path)
             })
             .collect();
         Some(paths)

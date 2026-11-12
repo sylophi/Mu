@@ -1,4 +1,4 @@
-//! The sidebar: the folders added to it and their groups, iCloud Drive, disks, the Trash and servers on the network, then the shelf.
+//! The sidebar: the folders added to it and their groups, disks, the Trash and servers on the network, then the shelf.
 
 use std::{
     cell::Cell,
@@ -75,7 +75,6 @@ pub(super) struct Slot {
 enum Place {
     /// An item added to the sidebar.
     Added(Slot),
-    ICloudDrive,
     Volume,
     Trash,
 }
@@ -87,14 +86,13 @@ struct Sections {
     items: Vec<Entry>,
     /// What each group shows, which is nothing while it's collapsed.
     groups: Vec<Vec<Entry>>,
-    icloud: Vec<Entry>,
     locations: Vec<Entry>,
 }
 
 impl Sections {
     /// Every entry, from the top.
     fn all(&self) -> impl Iterator<Item = &Entry> {
-        self.items.iter().chain(self.groups.iter().flatten()).chain(&self.icloud).chain(&self.locations)
+        self.items.iter().chain(self.groups.iter().flatten()).chain(&self.locations)
     }
 }
 
@@ -330,7 +328,7 @@ impl Workspace {
         .detach();
     }
 
-    /// What's in the sidebar's sections. There's iCloud while iCloud Drive is on.
+    /// What's in the sidebar's sections.
     fn sections(&self, cx: &App) -> Sections {
         let settings = Settings::get(cx);
         let entries = |group: Option<usize>, items: &[PathBuf]| -> Vec<Entry> {
@@ -348,13 +346,11 @@ impl Workspace {
             .enumerate()
             .map(|(ix, group)| if group.collapsed { Vec::new() } else { entries(Some(ix), &group.items) })
             .collect();
-        let icloud = fs::icloud_drive();
-        let icloud = if icloud.is_dir() { vec![("iCloud Drive".into(), icloud, Place::ICloudDrive)] } else { vec![] };
         let volumes = &cx.global::<Places>().volumes;
         let mut locations: Vec<_> =
             volumes.iter().map(|volume| (volume.name.clone(), volume.path.clone(), Place::Volume)).collect();
         locations.push(("Trash".into(), fs::trash_dir(), Place::Trash));
-        Sections { items: entries(None, &settings.sidebar_items), groups, icloud, locations }
+        Sections { items: entries(None, &settings.sidebar_items), groups, locations }
     }
 
     /// Shows the folder at this position in the sidebar, counting from the top.
@@ -368,7 +364,7 @@ impl Workspace {
         let current = self.last_folder.as_ref().map(|browser| browser.read(cx).path().to_path_buf());
         let sections = self.sections(cx);
         let underway = underway_by_place(&sections, cx);
-        let Sections { items, groups, icloud, locations } = sections;
+        let Sections { items, groups, locations } = sections;
         let rows = |items: Vec<Entry>, cx: &mut Context<Self>| -> Vec<AnyElement> {
             items
                 .into_iter()
@@ -443,7 +439,6 @@ impl Workspace {
                 }
             }))
             .children(added)
-            .when(!icloud.is_empty(), |el| el.child(section("iCloud", icloud, cx)))
             .child(section("Locations", locations, cx))
             .children(self.render_network(cx))
             .child(blank);

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::{App, BorrowAppContext as _, Global, Pixels, px};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use crate::fs::home_dir;
+use crate::fs::{home_dir, icloud_drive};
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -63,19 +63,24 @@ pub const DOCK_WIDTHS: DockWidths = DockWidths { sidebar: px(170.), preview: px(
 impl Default for Settings {
     fn default() -> Self {
         let home = home_dir();
+        let mut sidebar_items = vec![
+            home.clone(),
+            home.join("Desktop"),
+            home.join("Documents"),
+            home.join("Downloads"),
+            "/Applications".into(),
+        ];
+        let icloud = icloud_drive();
+        if icloud.is_dir() {
+            sidebar_items.push(icloud);
+        }
         Self {
             show_hidden: false,
             show_sidebar: true,
             show_preview: false,
             grid: false,
             smart_expansion: true,
-            sidebar_items: vec![
-                home.clone(),
-                home.join("Desktop"),
-                home.join("Documents"),
-                home.join("Downloads"),
-                "/Applications".into(),
-            ],
+            sidebar_items,
             sidebar_groups: Vec::new(),
             column_widths: COLUMN_WIDTHS,
             dock_widths: DOCK_WIDTHS,
