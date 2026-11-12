@@ -167,7 +167,7 @@ fn folders_edge(paths: &[PathBuf]) -> f32 {
 #[derive(Clone, Copy)]
 enum DropArea {
     Row(Slot),
-    /// A group's heading, or the space kept for items outside any group while there are none.
+    /// A group's heading, or the space for items outside any group while there are none.
     Top(Option<usize>),
     /// Everything added to the sidebar, leaving which clears the drop.
     Added,
@@ -386,9 +386,10 @@ impl Workspace {
                 .child(div().px_2().pb_1().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(title))
                 .children(rows)
         };
+        let dragging = self.dragging_files || self.dragging_sidebar_item;
         let items = match items.is_empty() {
-            true => self.render_no_items(cx).into_any_element(),
-            false => v_flex().gap_px().children(rows(items, cx)).into_any_element(),
+            true => dragging.then(|| self.render_no_items(cx).into_any_element()),
+            false => Some(v_flex().gap_px().children(rows(items, cx)).into_any_element()),
         };
         let groups: Vec<_> = groups
             .into_iter()
@@ -398,8 +399,10 @@ impl Workspace {
                 self.render_group(ix, rows, cx)
             })
             .collect();
-        let added = v_flex().gap_4().child(items).children(groups);
-        let added = Self::track_group_drop(Self::track_item_drop(added, DropArea::Added, cx), None, cx);
+        let added = (items.is_some() || !groups.is_empty()).then(|| {
+            let added = v_flex().gap_4().children(items).children(groups);
+            Self::track_group_drop(Self::track_item_drop(added, DropArea::Added, cx), None, cx)
+        });
         // Its own element, since a menu on the whole sidebar would open along with a row's.
         let workspace = cx.weak_entity();
         let blank = div().id("sidebar-blank").flex_1().min_h(px(40.)).context_menu(move |menu, _, _| {
@@ -412,12 +415,16 @@ impl Workspace {
             .p_2()
             .gap_4()
             .overflow_y_scroll()
-            .on_drag_move(|event: &DragMoveEvent<DraggedSidebarItem>, window, cx| {
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebarItem>, window, cx| {
+                if !this.dragging_sidebar_item {
+                    this.dragging_sidebar_item = true;
+                    cx.notify();
+                }
                 let removing = !event.bounds.contains(&event.event.position);
                 if event.drag(cx).removing.replace(removing) != removing {
                     window.refresh();
                 }
-            })
+            }))
             .on_drop(cx.listener(|this, item: &DraggedSidebarItem, _, cx| {
                 if let Some(Slot { group, ix }) = this.sidebar_drop.take() {
                     Settings::update(cx, |settings| {
@@ -435,7 +442,7 @@ impl Workspace {
                     Settings::update(cx, |settings| settings.place_in_sidebar(group, ix, paths));
                 }
             }))
-            .child(added)
+            .children(added)
             .when(!icloud.is_empty(), |el| el.child(section("iCloud", icloud, cx)))
             .child(section("Locations", locations, cx))
             .children(self.render_network(cx))
@@ -448,7 +455,8 @@ impl Workspace {
             .children(self.render_shelf(cx))
     }
 
-    /// The space to drag items to, while none are outside a group.
+    /// The space to drag items to while none are outside a group, there during a drag that could
+    /// go in it.
     fn render_no_items(&self, cx: &Context<Self>) -> Div {
         let theme = cx.theme();
         let dropping = cx.has_active_drag() && self.sidebar_drop == Some(Slot { group: None, ix: 0 });
