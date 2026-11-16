@@ -415,6 +415,6 @@ fn tab(
                 .hover(|s| s.bg(theme.accent.opacity(0.5)).text_color(theme.tab_active_foreground))
         })
         .child(icon)
-        .child(truncated(title).text_ellipsis_middle())
+        .child(truncated(title).flex_1().text_ellipsis_middle())
         .child(close)
 }
