@@ -40,6 +40,8 @@ pub(super) const TILE_TOP: Pixels = px(8.);
 pub(super) const TILE_ICON: Pixels = px(56.);
 /// How far a tile's icon and name are in from its edges.
 const TILE_PADDING: Pixels = px(4.);
+/// The width of the cloud after a tile's name: the xsmall mark, 12px, and `gap_1` before it.
+const CLOUD_MARK: Pixels = px(16.);
 /// What an item's parts look to for the pointer being on it.
 const ITEM: &str = "item";
 pub(super) const ROW_ICON: Pixels = px(16.);
@@ -539,9 +541,18 @@ impl Browser {
         let theme = cx.theme();
         // Under the name, in place of its second line.
         let status = status(activity.as_ref(), true, cx);
+        // After the name, as Finder marks what's only in iCloud.
+        let cloud = match activity {
+            Some(Activity::InCloud) => mark(activity.as_ref(), cx),
+            _ => None,
+        };
         let (first, rest) = match status {
             Some(_) => (one_line(&entry.name), None),
-            None => tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper),
+            None => match tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper) {
+                // A name on one line that leaves no room for the cloud wraps sooner.
+                (first, None) if cloud.is_some() => tile_name(first, width - TILE_PADDING * 2. - CLOUD_MARK, wrapper),
+                wrapped => wrapped,
+            },
         };
         let dimmed = batch.dimmed(entry);
         let picture = || match thumbnail.clone() {
@@ -588,11 +599,20 @@ impl Browser {
                             .min_w_0()
                             .max_w_full()
                             .items_center()
-                            .map(|el| match status {
-                                Some(_) => el.child(div().max_w_full().truncate().text_ellipsis_middle().child(first)),
-                                None => el.child(div().whitespace_nowrap().child(first)),
+                            .map(|el| {
+                                // The cloud goes after the last line, which is cut short for it if need be.
+                                let last = |line| {
+                                    h_flex()
+                                        .max_w_full()
+                                        .gap_1()
+                                        .child(div().min_w_0().truncate().text_ellipsis_middle().child(line))
+                                        .children(cloud)
+                                };
+                                match rest {
+                                    Some(rest) => el.child(div().whitespace_nowrap().child(first)).child(last(rest)),
+                                    None => el.child(last(first)),
+                                }
                             })
-                            .children(rest.map(|rest| div().max_w_full().truncate().text_ellipsis_middle().child(rest)))
                             .children(status.map(|(status, color)| {
                                 div().max_w_full().truncate().text_size(px(10.)).text_color(color).child(status)
                             })),
@@ -684,7 +704,6 @@ fn status(activity: Option<&Activity>, short: bool, cx: &App) -> Option<(String,
         Some(Activity::Unsynced(Unsynced::Waiting)) => Some((Unsynced::Waiting.describe(), theme.muted_foreground)),
         Some(Activity::Unsynced(unsynced)) => Some((unsynced.describe(), theme.warning)),
         Some(Activity::Inside(inside)) => Some((underway::summary(inside), theme.muted_foreground)),
-        Some(Activity::InCloud) if short => Some(("In iCloud".into(), theme.muted_foreground)),
         Some(Activity::InCloud) | None => None,
     }
 }
