@@ -18,8 +18,14 @@ for patch in patches/*.patch; do
 	mkdir -p "$dir"
 	curl -fsSL "https://static.crates.io/crates/$crate/$crate-$version.crate" -o "$dir.crate"
 	# Checked against crates.io's index, as Cargo checks what it downloads. The index files a crate
-	# under the first two letters of its name, then the next two.
-	index=$(curl -fsSL "https://index.crates.io/$(echo "$crate" | cut -c1-2)/$(echo "$crate" | cut -c3-4)/$crate")
+	# under the first two letters of its name, then the next two, or one of three letters under 3
+	# and its first.
+	case ${#crate} in
+	1 | 2) prefix=${#crate} ;;
+	3) prefix=3/$(echo "$crate" | cut -c1) ;;
+	*) prefix=$(echo "$crate" | cut -c1-2)/$(echo "$crate" | cut -c3-4) ;;
+	esac
+	index=$(curl -fsSL "https://index.crates.io/$prefix/$crate")
 	checksum=$(echo "$index" | grep -F "\"vers\":\"$version\"" | sed 's/.*"cksum":"\([0-9a-f]*\)".*/\1/')
 	echo "$checksum  $dir.crate" | shasum -a 256 --check --status
 	tar -xzf "$dir.crate" -C "$dir" --strip-components 1

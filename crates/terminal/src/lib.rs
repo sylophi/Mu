@@ -271,9 +271,14 @@ impl TerminalView {
                     }
                     dirty = true;
                 }
-                AlacEvent::Title(title) => {
-                    self.title = Some(title);
-                    cx.emit(TerminalEvent::TitleChanged);
+                // Shells name the tab with the icon name (OSC 1) and the window with its title (OSC 2),
+                // and Mu has both show what came last: oh-my-zsh sends a short path after the
+                // user@host:path title. OSC 0 sends both, the same.
+                AlacEvent::Title(title) | AlacEvent::IconName(title) => {
+                    if self.title.as_ref() != Some(&title) {
+                        self.title = Some(title);
+                        cx.emit(TerminalEvent::TitleChanged);
+                    }
                 }
                 AlacEvent::ResetTitle => {
                     self.title = None;
@@ -666,7 +671,8 @@ impl EntityInputHandler for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{AlacEvent, Arc, EventListener as _, Listener, Ordering};
+    use super::{AlacEvent, Arc, Config, EventListener as _, Listener, Ordering, Term, TermSize};
+    use alacritty_terminal::vte::ansi::Processor;
 
     #[test]
     fn output_wakes_the_view_once_a_frame() {
@@ -680,5 +686,18 @@ mod tests {
         listener.redraw_pending.store(false, Ordering::Release);
         listener.send_event(AlacEvent::Wakeup);
         assert_eq!(received.len(), 3);
+    }
+
+    #[test]
+    fn osc_1_comes_through_as_the_icon_name() {
+        let (events, received) = smol::channel::unbounded();
+        let listener = Listener { events, redraw_pending: Arc::default() };
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), listener);
+        let mut parser: Processor = Processor::new();
+        // What oh-my-zsh prints before a prompt.
+        parser.advance(&mut term, b"\x1b]2;me@host:~/Downloads\x07\x1b]1;~/Downloads\x07");
+        let events: Vec<_> =
+            std::iter::from_fn(|| received.try_recv().ok()).map(|event| format!("{event:?}")).collect();
+        assert_eq!(events, ["Title(me@host:~/Downloads)", "IconName(~/Downloads)"]);
     }
 }

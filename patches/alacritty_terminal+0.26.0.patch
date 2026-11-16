@@ -1,0 +1,45 @@
+alacritty_terminal 0.26.0 as published, with the change Mu needs to name terminal tabs as shells
+ask:
+
+- The icon name a program sets (vte's `set_icon_name`, from Mu's vte patch) is passed on as
+  `Event::IconName`, as the window title is as `Event::Title`.
+
+diff --git a/src/event.rs b/src/event.rs
+index 922cf1d..0d610ca 100644
+--- a/src/event.rs
++++ b/src/event.rs
+@@ -21,6 +21,9 @@ pub enum Event {
+     /// Reset to the default window title.
+     ResetTitle,
+ 
++    /// Icon name change, which terminals with tabs show on them.
++    IconName(String),
++
+     /// Request to store a text string in the clipboard.
+     ClipboardStore(ClipboardType, String),
+ 
+@@ -70,6 +73,7 @@ impl Debug for Event {
+             Event::CursorBlinkingChange => write!(f, "CursorBlinkingChange"),
+             Event::MouseCursorDirty => write!(f, "MouseCursorDirty"),
+             Event::ResetTitle => write!(f, "ResetTitle"),
++            Event::IconName(name) => write!(f, "IconName({name})"),
+             Event::Wakeup => write!(f, "Wakeup"),
+             Event::Bell => write!(f, "Bell"),
+             Event::Exit => write!(f, "Exit"),
+diff --git a/src/term/mod.rs b/src/term/mod.rs
+index 8eb6797..ecbfd29 100644
+--- a/src/term/mod.rs
++++ b/src/term/mod.rs
+@@ -2231,6 +2231,12 @@ impl<T: EventListener> Handler for Term<T> {
+         self.event_proxy.send_event(title_event);
+     }
+ 
++    #[inline]
++    fn set_icon_name(&mut self, name: String) {
++        trace!("Setting icon name to '{name}'");
++        self.event_proxy.send_event(Event::IconName(name));
++    }
++
+     #[inline]
+     fn push_title(&mut self) {
+         trace!("Pushing '{:?}' onto title stack", self.title);

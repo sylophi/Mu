@@ -1,0 +1,45 @@
+vte 0.15.0 as published, with the change Mu needs to name terminal tabs as shells ask:
+
+- OSC 1 sets the icon name, and OSC 0 sets it along with the window title (`Handler::set_icon_name`).
+  vte dropped OSC 1, and terminals with tabs show the icon name on them: oh-my-zsh sets it to a
+  short path, and the window title to user@host:path.
+
+diff --git a/src/ansi.rs b/src/ansi.rs
+index 592266e..fa19696 100644
+--- a/src/ansi.rs
++++ b/src/ansi.rs
+@@ -496,6 +496,9 @@ pub trait Handler {
+     /// OSC to set window title.
+     fn set_title(&mut self, _: Option<String>) {}
+ 
++    /// OSC to set the icon name, which terminals with tabs show on them.
++    fn set_icon_name(&mut self, _: String) {}
++
+     /// Set the cursor style.
+     fn set_cursor_style(&mut self, _: Option<CursorStyle>) {}
+ 
+@@ -1346,8 +1349,8 @@ where
+         }
+ 
+         match params[0] {
+-            // Set window title.
+-            b"0" | b"2" => {
++            // Set icon name and window title, icon name, or window title.
++            b"0" | b"1" | b"2" => {
+                 if params.len() >= 2 {
+                     let title = params[1..]
+                         .iter()
+@@ -1356,7 +1359,12 @@ where
+                         .join(";")
+                         .trim()
+                         .to_owned();
+-                    self.handler.set_title(Some(title));
++                    if params[0] != b"2" {
++                        self.handler.set_icon_name(title.clone());
++                    }
++                    if params[0] != b"1" {
++                        self.handler.set_title(Some(title));
++                    }
+                     return;
+                 }
+                 unhandled(params);
