@@ -40,8 +40,7 @@ pub(super) const TILE_TOP: Pixels = px(8.);
 pub(super) const TILE_ICON: Pixels = px(56.);
 /// How far a tile's icon and name are in from its edges.
 const TILE_PADDING: Pixels = px(4.);
-/// What the cloud after a tile's name takes from the name's width: the xsmall mark, 12px, and the
-/// gap before it.
+/// The width of the cloud after a tile's name: the xsmall mark, 12px, and `gap_1` before it.
 const CLOUD_MARK: Pixels = px(16.);
 /// What an item's parts look to for the pointer being on it.
 const ITEM: &str = "item";
@@ -547,10 +546,13 @@ impl Browser {
             Some(Activity::InCloud) => mark(activity.as_ref(), cx),
             _ => None,
         };
-        let name_width = width - TILE_PADDING * 2. - if cloud.is_some() { CLOUD_MARK } else { px(0.) };
         let (first, rest) = match status {
             Some(_) => (one_line(&entry.name), None),
-            None => tile_name(one_line(&entry.name), name_width, wrapper),
+            None => match tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper) {
+                // A name on one line that leaves no room for the cloud wraps sooner.
+                (first, None) if cloud.is_some() => tile_name(first, width - TILE_PADDING * 2. - CLOUD_MARK, wrapper),
+                wrapped => wrapped,
+            },
         };
         let dimmed = batch.dimmed(entry);
         let picture = || match thumbnail.clone() {
@@ -598,19 +600,17 @@ impl Browser {
                             .max_w_full()
                             .items_center()
                             .map(|el| {
-                                let cut =
-                                    |line| div().min_w_0().max_w_full().truncate().text_ellipsis_middle().child(line);
-                                // The cloud goes after the name's last line.
-                                let with_cloud = |line: Div| match cloud {
-                                    Some(cloud) => h_flex().max_w_full().gap_1().child(line).child(cloud),
-                                    None => line,
+                                // The cloud goes after the last line, which is cut short for it if need be.
+                                let last = |line| {
+                                    h_flex()
+                                        .max_w_full()
+                                        .gap_1()
+                                        .child(div().min_w_0().truncate().text_ellipsis_middle().child(line))
+                                        .children(cloud)
                                 };
                                 match rest {
-                                    Some(rest) => {
-                                        el.child(div().whitespace_nowrap().child(first)).child(with_cloud(cut(rest)))
-                                    }
-                                    None if status.is_some() => el.child(cut(first)),
-                                    None => el.child(with_cloud(div().whitespace_nowrap().child(first))),
+                                    Some(rest) => el.child(div().whitespace_nowrap().child(first)).child(last(rest)),
+                                    None => el.child(last(first)),
                                 }
                             })
                             .children(status.map(|(status, color)| {
