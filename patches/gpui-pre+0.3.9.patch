@@ -11,6 +11,10 @@ gpui-pre snapshot has them:
   "IMG_0012.jpeg" all looked alike.
 - `App::on_quit_requested` lets the app decide, however long it takes, whether a quit from outside
   it goes ahead (`app.rs`, `platform.rs`).
+- A line shaped to a fixed width puts every character on its cell (`apply_force_width_to_layout`
+  in `line_layout.rs`). It left one alone until it was more than a pixel off, so with the
+  terminal's cells rounded to whole pixels, the first few characters of a word sat at the font's
+  own spacing and the rest jumped onto the cells.
 
 diff --git a/src/app.rs b/src/app.rs
 index cdbd559..12b5dd7 100644
@@ -57,6 +61,58 @@ index c08d964..fbbfdd0 100644
      fn on_reopen(&self, callback: Box<dyn FnMut()>);
      /// Registers the callback invoked when the system is about to sleep.
      fn on_system_sleep(&self, callback: Box<dyn FnMut()>);
+diff --git a/src/text_system/line_layout.rs b/src/text_system/line_layout.rs
+index f0bf121..b371eb0 100644
+--- a/src/text_system/line_layout.rs
++++ b/src/text_system/line_layout.rs
+@@ -907,10 +907,7 @@ fn apply_force_width_to_layout(layout: &mut LineLayout, force_width: Pixels) {
+             let shaped_x = glyph.position.x;
+ 
+             if shaped_x > last_base_shaped_x + force_width * 0.5 {
+-                let forced_x = glyph_pos * force_width;
+-                if (shaped_x - forced_x).abs() > px(1.) {
+-                    glyph.position.x = forced_x;
+-                }
++                glyph.position.x = glyph_pos * force_width;
+                 last_base_shaped_x = shaped_x;
+                 last_base_actual_x = glyph.position.x;
+                 glyph_pos += 1;
+@@ -1162,29 +1159,23 @@ mod tests {
+     #[test]
+     fn test_force_width_corrects_drifted_base_positions() {
+         let cell_width = px(8.);
+-        // Font metrics don't perfectly match cell grid — glyphs drift >1px from cell boundary
+-        let mut layout = make_layout(vec![
+-            glyph_at(0.5, 0),  // within 1px tolerance, kept as-is
+-            glyph_at(10.2, 1), // >1px off from 8.0, corrected
+-            glyph_at(19.8, 2), // >1px off from 16.0, corrected
+-        ]);
++        // Font metrics don't match the cell grid, by less than a pixel or more
++        let mut layout = make_layout(vec![glyph_at(0.5, 0), glyph_at(8.6, 1), glyph_at(19.8, 2)]);
+ 
+         apply_force_width_to_layout(&mut layout, cell_width);
+ 
+         let positions = glyph_x_positions(&layout);
+-        assert_eq!(positions, vec![0.5, 8., 16.]);
++        assert_eq!(positions, vec![0., 8., 16.]);
+     }
+ 
+     #[test]
+-    fn test_force_width_combining_mark_after_within_tolerance_base() {
++    fn test_force_width_combining_mark_follows_corrected_base() {
+         let cell_width = px(8.);
+-        // Base glyph is within 1px of grid so it keeps its shaped position.
+-        // The combining mark must align to the base's actual position, not the grid slot.
+-        let mut layout = make_layout(vec![glyph_at(0.5, 0), glyph_at(0.5, 3)]);
++        let mut layout = make_layout(vec![glyph_at(8.6, 0), glyph_at(8.6, 3)]);
+ 
+         apply_force_width_to_layout(&mut layout, cell_width);
+ 
+         let positions = glyph_x_positions(&layout);
+-        assert_eq!(positions, vec![0.5, 0.5]);
++        assert_eq!(positions, vec![0., 0.]);
+     }
+ }
 diff --git a/src/text_system/line_wrapper.rs b/src/text_system/line_wrapper.rs
 index ca821bb..080f062 100644
 --- a/src/text_system/line_wrapper.rs

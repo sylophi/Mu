@@ -12,6 +12,9 @@ fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         mu_terminal::init(cx);
+        cx.text_system()
+            .add_fonts(vec![include_bytes!("../../../assets/fonts/JetBrainsMono-Regular.ttf").into()])
+            .expect("the font loads");
 
         ThemeRegistry::global_mut(cx).load_themes_from_str(THEMES).expect("theme.json parses");
         cx.set_global(ansi_colors(THEMES));
