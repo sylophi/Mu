@@ -4,9 +4,13 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, WindowExt as _, h_flex,
+    ActiveTheme as _, Icon, Sizable as _, Theme, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
@@ -71,6 +75,112 @@ fn path_segments(path: &Path, home: &Path, icloud: &Path) -> Vec<PathBuf> {
         segments.push(dir.clone());
     }
     segments
+}
+
+/// What the path bar shows of a folder's segments, in the room it has.
+#[derive(Debug, Default, PartialEq)]
+struct Fit {
+    /// Whether the first folder shows its icon and not its name.
+    icon_only: bool,
+    /// How many folders after the first make way for a "…" menu of them.
+    hidden: usize,
+    /// The widest a name can be, short of room, but the last's.
+    cap: Option<Pixels>,
+}
+
+// How `render_path_bar` lays out the path bar, for `fit` to measure it by.
+/// Between the path bar's parts.
+const GAP: Rems = rems(0.125);
+/// On each side of the path bar, inside its border.
+const BAR_PADDING: Rems = rems(0.25);
+/// On each side of a segment's name.
+const PADDING: Rems = rems(0.375);
+/// Before each segment but the first, as `.xsmall()` makes it.
+const CHEVRON: Rems = rems(0.75);
+const FONT_SIZE: Rems = rems(0.875);
+/// The first segment's icon.
+const ICON: Pixels = px(14.);
+/// Between the first segment's icon and its name.
+const ICON_GAP: Rems = rems(0.25);
+/// The "…" for the folders that make way.
+const ELLIPSIS_BUTTON: Rems = rems(1.375);
+/// Names aren't truncated shorter than this, or there'd be too little left to tell them apart.
+const MIN_NAME: Pixels = px(64.);
+
+/// Fits segments with names `widths` wide into `room`, at the window's `rem`. Short of room, the
+/// first folder gives way to its icon, then the longest names are truncated to the same width, then
+/// the folders after the first make way from the outside in. The folder you're in stays whole for
+/// as long as it can.
+fn fit(widths: &[Pixels], room: Pixels, rem: Pixels) -> Fit {
+    let [gap, padding, chevron, icon_gap, ellipsis_button] =
+        [GAP, PADDING, CHEVRON, ICON_GAP, ELLIPSIS_BUTTON].map(|rems| rems.to_pixels(rem));
+    let last = widths.len() - 1;
+    let first = gap + padding * 2. + ICON;
+    let after_first = gap + chevron + padding * 2.;
+    let full = first + icon_gap + widths[0] + widths[1..].iter().map(|&w| after_first + w).sum::<Pixels>();
+    if full <= room || last == 0 {
+        return Fit::default();
+    }
+    for hidden in 0..last - 1 {
+        let ellipsis = if hidden == 0 { Pixels::ZERO } else { gap + chevron + ellipsis_button };
+        let shown = &widths[hidden + 1..last];
+        let fixed = first + ellipsis + after_first * (shown.len() + 1) as f32 + widths[last];
+        let cap = cap(shown, room - fixed);
+        if cap.is_none_or(|cap| cap >= MIN_NAME) {
+            return Fit { icon_only: true, hidden, cap };
+        }
+    }
+    Fit { icon_only: true, hidden: last - 1, cap: None }
+}
+
+/// What comes before each segment but the first.
+fn chevron(theme: &Theme) -> Icon {
+    Icon::new(IconName::ChevronRight).xsmall().flex_none().text_color(theme.muted_foreground)
+}
+
+/// The "…" in the path bar, with a menu of the folders that made way for it.
+fn hidden_folders(hidden: Vec<(SharedString, PathBuf)>, cx: &Context<Workspace>) -> impl IntoElement + use<> {
+    let workspace = cx.entity().downgrade();
+    h_flex()
+        .id("hidden-folders")
+        .flex_none()
+        .child(chevron(cx.theme()))
+        .child(
+            Button::new("hidden-folders-menu")
+                .ghost()
+                .xsmall()
+                .w(ELLIPSIS_BUTTON)
+                .label("…")
+                .text_color(cx.theme().muted_foreground)
+                .dropdown_menu(move |menu, _, _| {
+                    hidden.iter().fold(menu, |menu, (name, dir)| {
+                        let (name, icon, dir, workspace) = (name.clone(), dir.clone(), dir.clone(), workspace.clone());
+                        let item = PopupMenuItem::element(move |_, _| {
+                            h_flex().gap_2().child(icons::item(&icon, true, ICON)).child(name.clone())
+                        });
+                        menu.item(item.on_click(move |_, window, cx| {
+                            workspace.update(cx, |this, cx| this.show_folder(dir.clone(), window, cx)).ok();
+                        }))
+                    })
+                }),
+        )
+        // Opening the menu isn't a click to type a path.
+        .on_click(|_, _, cx| cx.stop_propagation())
+}
+
+/// The widest each of `widths` can be to add up to `room` at most, or none if they fit as they are.
+fn cap(widths: &[Pixels], room: Pixels) -> Option<Pixels> {
+    let mut sorted = widths.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut spent = Pixels::ZERO;
+    for (ix, &width) in sorted.iter().enumerate() {
+        let left = (sorted.len() - ix) as f32;
+        if spent + width * left > room {
+            return Some((room - spent) / left);
+        }
+        spent += width;
+    }
+    None
 }
 
 impl Workspace {
@@ -238,73 +348,84 @@ impl Workspace {
                 .into_any_element();
         }
         let theme = cx.theme();
-        let segments: Vec<(SharedString, PathBuf)> = path_segments(path, &home_dir(), &fs::icloud_drive())
+        let mut segments: Vec<(SharedString, PathBuf)> = path_segments(path, &home_dir(), &fs::icloud_drive())
             .into_iter()
             .map(|dir| (fs::display_name(&dir).into(), dir))
             .collect();
-        // Short of room, the outermost folders give way to "…", and the one you're in stays.
         let style = window.text_style();
-        let font_size = rems(0.875).to_pixels(window.rem_size());
+        let rem = window.rem_size();
+        let font_size = FONT_SIZE.to_pixels(rem);
         let widths: Vec<Pixels> = segments
             .iter()
-            .enumerate()
-            .map(|(ix, (name, _))| {
-                let text = window.text_system().shape_line(name.clone(), font_size, &[style.to_run(name.len())], None);
-                // Its padding and icon, and the chevron and gap before it.
-                text.width + px(16.) + if ix == 0 { px(18.) } else { Pixels::ZERO }
+            .map(|(name, _)| {
+                window.text_system().shape_line(name.clone(), font_size, &[style.to_run(name.len())], None).width
             })
             .collect();
-        let fits = |skip: usize| {
-            let ellipsis = if skip > 0 { px(24.) } else { Pixels::ZERO };
-            widths[skip..].iter().sum::<Pixels>() + ellipsis <= self.path_bar_width - px(10.)
+        let fit = match self.path_bar_width {
+            // Before the first frame there's no width to go by yet.
+            Pixels::ZERO => Fit::default(),
+            // Less its border and padding.
+            width => fit(&widths, width - px(2.) - BAR_PADDING.to_pixels(rem) * 2., rem),
         };
         let last = segments.len() - 1;
-        let skip = match self.path_bar_width {
-            // Before the first frame there's no width to go by yet.
-            Pixels::ZERO => 0,
-            _ => (0..last).find(|&skip| fits(skip)).unwrap_or(last),
+        // Short of room, names lose their middle, which keeps how they start and end apart.
+        if let Some(cap) = fit.cap {
+            let mut wrapper = cx.text_system().line_wrapper(style.font(), font_size);
+            let shown = fit.hidden + 1..last;
+            for ((name, _), &width) in segments[shown.clone()].iter_mut().zip(&widths[shown]) {
+                if width > cap {
+                    let runs = [style.to_run(name.len())];
+                    *name = wrapper.truncate_line(name.clone(), cap, "…", &runs, TruncateFrom::Middle).0;
+                }
+            }
+        }
+        let segment = |ix: usize, name: SharedString, path: PathBuf| {
+            let icon_only = ix == 0 && fit.icon_only;
+            h_flex()
+                // Only the folder you're in gives way, once nothing else can.
+                .map(|el| if ix == last { el.min_w_0() } else { el.flex_none() })
+                .when(ix > 0, |el| el.child(chevron(theme)))
+                .child(
+                    h_flex()
+                        .id(("segment", ix))
+                        .min_w_0()
+                        .px(PADDING)
+                        .py_0p5()
+                        .gap(ICON_GAP)
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .when(ix != last, |el| el.text_color(theme.muted_foreground))
+                        .hover(|s| s.bg(theme.secondary_hover).text_color(theme.foreground))
+                        .drop_target()
+                        .when(ix == 0, |el| el.child(icons::item(&path, true, ICON)))
+                        .map(|el| match icon_only {
+                            true => el.tooltip(move |window, cx| Tooltip::new(name.clone()).build(window, cx)),
+                            false => el.child(truncated(name).text_ellipsis_middle()),
+                        })
+                        .map(|el| opens_folder(el, path.clone(), cx))
+                        .on_drop_files(move |paths, window, cx| {
+                            drag::drop_into(paths, path.clone(), window, cx).detach()
+                        }),
+                )
         };
+        let mut segments = segments.into_iter().enumerate();
+        let root = segments.next().map(|(ix, (name, path))| segment(ix, name, path));
+        let hidden: Vec<_> = segments.by_ref().take(fit.hidden).map(|(_, segment)| segment).collect();
         h_flex()
             .id("path-bar")
             .h(px(26.))
-            .px_1()
-            .gap_0p5()
+            .px(BAR_PADDING)
+            .gap(GAP)
             .overflow_hidden()
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.input)
             .bg(theme.background)
-            .text_sm()
+            .text_size(FONT_SIZE)
             .cursor_text()
-            .when(skip > 0, |el| el.child(div().px_1p5().text_color(theme.muted_foreground).child("…")))
-            .children(segments.into_iter().enumerate().skip(skip).map(|(ix, (name, path))| {
-                h_flex()
-                    .min_w_0()
-                    .when(ix > 0, |el| {
-                        el.child(
-                            Icon::new(IconName::ChevronRight).xsmall().flex_none().text_color(theme.muted_foreground),
-                        )
-                    })
-                    .child(
-                        h_flex()
-                            .id(("segment", ix))
-                            .min_w_0()
-                            .px_1p5()
-                            .py_0p5()
-                            .gap_1()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .when(ix != last, |el| el.text_color(theme.muted_foreground))
-                            .hover(|s| s.bg(theme.secondary_hover).text_color(theme.foreground))
-                            .drop_target()
-                            .when(ix == 0, |el| el.child(icons::item(&path, true, px(14.))))
-                            .child(truncated(name))
-                            .map(|el| opens_folder(el, path.clone(), cx))
-                            .on_drop_files(move |paths, window, cx| {
-                                drag::drop_into(paths, path.clone(), window, cx).detach()
-                            }),
-                    )
-            }))
+            .children(root)
+            .when(!hidden.is_empty(), |el| el.child(hidden_folders(hidden, cx)))
+            .children(segments.map(|(ix, (name, path))| segment(ix, name, path)))
             .child(div().flex_1().h_full())
             .on_click(cx.listener(|this, _, window, cx| this.edit_path(false, window, cx)))
             .into_any_element()
@@ -356,7 +477,9 @@ impl Workspace {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::path_segments;
+    use gpui_kit::{Pixels, px};
+
+    use super::{Fit, fit, path_segments};
 
     fn segments(path: &str) -> Vec<PathBuf> {
         let home = Path::new("/Users/me");
@@ -396,5 +519,42 @@ mod tests {
         assert_eq!(segments("/usr/local"), paths(&["/", "/usr", "/usr/local"]));
         assert_eq!(segments("/Volumes"), paths(&["/", "/Volumes"]));
         assert_eq!(segments("/Users/someone"), paths(&["/", "/Users", "/Users/someone"]));
+    }
+
+    /// Names 40, 90, 50, 150 and 50 wide take 516 in all, or 472 with the first as an icon.
+    fn fit_in(room: f32) -> Fit {
+        let widths: Vec<Pixels> = [40., 90., 50., 150., 50.].into_iter().map(px).collect();
+        fit(&widths, px(room), px(16.))
+    }
+
+    #[test]
+    fn segments_that_fit_stay_whole() {
+        assert_eq!(fit_in(516.), Fit::default());
+    }
+
+    #[test]
+    fn short_of_room_the_first_folder_shows_its_icon() {
+        assert_eq!(fit_in(515.), Fit { icon_only: true, hidden: 0, cap: None });
+        assert_eq!(fit_in(472.), Fit { icon_only: true, hidden: 0, cap: None });
+    }
+
+    #[test]
+    fn then_the_longest_names_are_truncated() {
+        assert_eq!(fit_in(432.), Fit { icon_only: true, hidden: 0, cap: Some(px(110.)) });
+        // The next longest is truncated with it, once it's as short.
+        assert_eq!(fit_in(372.), Fit { icon_only: true, hidden: 0, cap: Some(px(70.)) });
+    }
+
+    #[test]
+    fn then_folders_make_way_from_the_outside_in() {
+        assert_eq!(fit_in(359.), Fit { icon_only: true, hidden: 1, cap: Some(px(117.)) });
+        assert_eq!(fit_in(305.), Fit { icon_only: true, hidden: 2, cap: Some(px(139.)) });
+        assert_eq!(fit_in(229.), Fit { icon_only: true, hidden: 3, cap: None });
+        assert_eq!(fit_in(40.), Fit { icon_only: true, hidden: 3, cap: None });
+    }
+
+    #[test]
+    fn a_single_folder_is_never_hidden() {
+        assert_eq!(fit(&[px(500.)], px(100.), px(16.)), Fit::default());
     }
 }
