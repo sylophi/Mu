@@ -11,6 +11,8 @@ gpui_kit::assets::icon_assets!(
         Bluetooth,
         AppWindow,
         AppWindowMac,
+        ArrowDownWideNarrow,
+        ArrowUpNarrowWide,
         ArchiveRestore,
         ClipboardPaste,
         Cloud,

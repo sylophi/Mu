@@ -1,4 +1,4 @@
-//! The toolbar over a folder: back, forward and up, the path bar, grid or list, the Trash,
+//! The toolbar over a folder: back, forward and up, the path bar, the sort, grid or list, the Trash,
 //! Uninstall and the filter.
 
 use gpui_kit::assets::IconName;
@@ -7,6 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
+    menu::{DropdownMenu as _, PopupMenuItem},
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
@@ -19,8 +20,37 @@ use super::{
 use crate::{
     browser::{self, Browser},
     places::Places,
-    settings::Settings,
+    settings::{Settings, SortKey},
 };
+
+/// What folders are sorted by, which its menu changes.
+fn render_sort(cx: &App) -> impl IntoElement + use<> {
+    let Settings { sort, descending, .. } = *Settings::get(cx);
+    let order = move |label: &'static str, on: bool| {
+        PopupMenuItem::new(label)
+            .checked(descending == on)
+            .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.descending = on))
+    };
+    Button::new("sort")
+        .ghost()
+        .small()
+        .icon(if descending { IconName::ArrowDownWideNarrow } else { IconName::ArrowUpNarrowWide })
+        .tooltip(format!("Sorted by {}", sort.label()))
+        .dropdown_menu(move |menu, _, _| {
+            SortKey::ALL
+                .into_iter()
+                .fold(menu, |menu, key| {
+                    menu.item(
+                        PopupMenuItem::new(key.label())
+                            .checked(sort == key)
+                            .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key))),
+                    )
+                })
+                .separator()
+                .item(order("Ascending", false))
+                .item(order("Descending", true))
+        })
+}
 
 impl Workspace {
     pub(super) fn render_toolbar(
@@ -69,6 +99,7 @@ impl Workspace {
                     .size_full(),
                 )
             })
+            .child(render_sort(cx))
             .child({
                 let grid = Settings::get(cx).grid;
                 h_flex()
