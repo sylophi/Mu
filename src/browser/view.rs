@@ -16,14 +16,13 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use super::{
     Browser, CancelRename,
     layout::Layout,
-    listing::SortKey,
     ops::{CutFiles, RenameState},
 };
 use crate::{
     drag::{self, DragFiles as _, DropFiles as _},
     fs::{self, Entry, icloud::Unsynced, underway::Transfer},
     icons,
-    settings::{COLUMN_WIDTHS, Settings},
+    settings::{COLUMN_WIDTHS, Settings, SortKey},
     underway::{self, Underway},
     workspace::TabEvent,
 };
@@ -229,7 +228,7 @@ impl Browser {
                         let chevron = if self.listing.descending { IconName::ChevronDown } else { IconName::ChevronUp };
                         el.child(Icon::new(chevron).xsmall().flex_none())
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_sort(key, cx)))
+                    .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key)))
             })
             .collect();
         let mut right = Pixels::ZERO;

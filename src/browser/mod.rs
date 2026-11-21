@@ -216,7 +216,7 @@ impl Browser {
             path: shown(path, cx),
             back: Vec::new(),
             forward: Vec::new(),
-            listing: Listing::default(),
+            listing: Listing::new(cx),
             error: None,
             blocked: None,
             filter: SharedString::default(),
@@ -247,7 +247,7 @@ impl Browser {
             _watch_expanded: Task::ready(()),
             underway: None,
             busy: false,
-            _settings: cx.observe_global::<Settings>(|this, cx| this.update_visible(cx)),
+            _settings: cx.observe_global::<Settings>(|this, cx| this.follow_settings(cx)),
             _in_window: Self::observe_in_window(window, cx),
         };
         cx.on_release(|this, cx| {

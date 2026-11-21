@@ -12,11 +12,12 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use super::{
     AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, DeleteImmediately, DownloadNow, Duplicate, NewFolder, Open,
     OpenInEditor, OpenInNewTab, OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, RemoveDownload,
-    Rename, ShowPackageContents, Trash, Uninstall, listing::SortKey,
+    Rename, ShowPackageContents, Trash, Uninstall,
 };
 use crate::{
     fs::{self, Entry},
     icons, pasteboard,
+    settings::{Settings, SortKey},
     workspace::actions::{AddToShelf, EmptyTrash},
 };
 
@@ -47,18 +48,14 @@ impl Browser {
                     menu.separator().menu_with_icon("Empty Trash…", IconName::Trash, Box::new(EmptyTrash))
                 })
                 .separator()
-                .submenu("Sort By", window, cx, {
-                    let entity = entity.clone();
-                    move |menu, _, _| {
-                        SortKey::ALL.into_iter().fold(menu, |menu, key| {
-                            let entity = entity.clone();
-                            menu.item(
-                                PopupMenuItem::new(key.label()).checked(sort == key).on_click(move |_, _, cx| {
-                                    entity.update(cx, |browser, cx| browser.set_sort(key, cx))
-                                }),
-                            )
-                        })
-                    }
+                .submenu("Sort By", window, cx, move |menu, _, _| {
+                    SortKey::ALL.into_iter().fold(menu, |menu, key| {
+                        menu.item(
+                            PopupMenuItem::new(key.label())
+                                .checked(sort == key)
+                                .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key))),
+                        )
+                    })
                 });
         }
         let mut origins = fs::Origins::default();
