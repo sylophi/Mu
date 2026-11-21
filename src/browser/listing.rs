@@ -489,8 +489,6 @@ impl Browser {
         let sort = (settings.sort, settings.descending);
         if (self.listing.sort, self.listing.descending) != sort {
             (self.listing.sort, self.listing.descending) = sort;
-            // Got ready sorted as it was, so it's got ready again.
-            self.prefetch = None;
             self.listing.sort();
         }
         self.update_visible(cx);

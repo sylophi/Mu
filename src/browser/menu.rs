@@ -155,7 +155,10 @@ pub fn sort_menu(menu: PopupMenu, cx: &App) -> PopupMenu {
             menu.item(
                 PopupMenuItem::new(key.label())
                     .checked(sort == key)
-                    .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key))),
+                    // Unlike a click on its column, it's left as it is when it's checked already.
+                    .when(sort != key, |item| {
+                        item.on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key)))
+                    }),
             )
         })
         .separator()
