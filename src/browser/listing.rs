@@ -23,7 +23,7 @@ use crate::{
     icons,
     permissions::{Permission, Permissions},
     places::Places,
-    settings::Settings,
+    settings::{Settings, SortKey},
     underway::Underway,
 };
 
@@ -34,31 +34,6 @@ const LISTING_WAIT: Duration = Duration::from_millis(20);
 /// How long changes deep in iCloud's folders have to stop for before what's only in iCloud is
 /// looked for again, as they come in a stream while it syncs.
 const CLOUD_SETTLE: Duration = Duration::from_secs(2);
-
-/// What the listing is sorted by, one for each of the list's columns.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum SortKey {
-    #[default]
-    Name,
-    Modified,
-    Size,
-    Kind,
-}
-
-impl SortKey {
-    /// In the order of the list's columns.
-    pub(super) const ALL: [SortKey; 4] = [SortKey::Name, SortKey::Modified, SortKey::Size, SortKey::Kind];
-
-    /// Its column's heading, which Sort By lists it by too.
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            SortKey::Name => "Name",
-            SortKey::Modified => "Date Modified",
-            SortKey::Size => "Size",
-            SortKey::Kind => "Kind",
-        }
-    }
-}
 
 /// What to do once the next listing arrives.
 #[derive(Default)]
@@ -104,11 +79,18 @@ pub(super) struct Listing {
     visible: Vec<usize>,
     /// Where each item is in `items`, by key.
     by_key: HashMap<SharedString, usize>,
+    /// What it's sorted by, as the settings say.
     pub(super) sort: SortKey,
     pub(super) descending: bool,
 }
 
 impl Listing {
+    /// An empty listing, sorted as the settings say.
+    pub(super) fn new(cx: &App) -> Self {
+        let settings = Settings::get(cx);
+        Self { sort: settings.sort, descending: settings.descending, ..Self::default() }
+    }
+
     /// How many items show.
     pub(super) fn len(&self) -> usize {
         self.visible.len()
@@ -414,8 +396,9 @@ impl Browser {
         if selecting {
             self.selection.set(select);
         }
+        self.listing.sort();
         // Keeps the selection to what shows.
-        self.sort_entries(cx);
+        self.update_visible(cx);
         self.check_cloud(Duration::ZERO, cx);
         if selecting && let Some(ix) = self.cursor_ix() {
             self.scroll_to(ix, ScrollStrategy::Center, cx);
@@ -453,11 +436,6 @@ impl Browser {
                 }
             }
         });
-    }
-
-    fn sort_entries(&mut self, cx: &mut Context<Self>) {
-        self.listing.sort();
-        self.update_visible(cx);
     }
 
     /// Works out which items show, and lets go of the selection, the cursor and a rename on those
@@ -505,18 +483,15 @@ impl Browser {
         }
     }
 
-    pub(super) fn set_sort(&mut self, key: SortKey, cx: &mut Context<Self>) {
-        let listing = &mut self.listing;
-        if listing.sort == key {
-            listing.descending = !listing.descending;
-        } else {
-            listing.sort = key;
-            // Newest and biggest first is what you usually want from those columns.
-            listing.descending = matches!(key, SortKey::Modified | SortKey::Size);
+    /// Keeps up with the settings: sorts again as they say, and shows or hides the hidden files.
+    pub(super) fn follow_settings(&mut self, cx: &mut Context<Self>) {
+        let settings = Settings::get(cx);
+        let sort = (settings.sort, settings.descending);
+        if (self.listing.sort, self.listing.descending) != sort {
+            (self.listing.sort, self.listing.descending) = sort;
+            self.listing.sort();
         }
-        // Got ready sorted as it was, so it's got ready again.
-        self.prefetch = None;
-        self.sort_entries(cx);
+        self.update_visible(cx);
     }
 }
 

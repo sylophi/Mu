@@ -26,6 +26,9 @@ pub struct Settings {
     pub sidebar_groups: Vec<SidebarGroup>,
     /// How wide the list's Name, Date Modified, Size and Kind columns are.
     pub column_widths: [Pixels; 4],
+    /// What folders are sorted by, in every tab.
+    pub sort: SortKey,
+    pub descending: bool,
     /// How wide the sidebar and the preview are in new windows, as in the last window to change them.
     pub dock_widths: DockWidths,
     /// Whether the greys lean toward a hue instead of being neutral.
@@ -42,6 +45,31 @@ impl Global for Settings {}
 
 /// The list's column widths to begin with, which a double click on a column's divider goes back to.
 pub const COLUMN_WIDTHS: [Pixels; 4] = [px(280.), px(170.), px(80.), px(150.)];
+
+/// What folders are sorted by, one for each of the list's columns.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Modified,
+    Size,
+    Kind,
+}
+
+impl SortKey {
+    /// In the order of the list's columns.
+    pub const ALL: [SortKey; 4] = [SortKey::Name, SortKey::Modified, SortKey::Size, SortKey::Kind];
+
+    /// Its column's heading, which Sort By lists it by too.
+    pub fn label(self) -> &'static str {
+        match self {
+            SortKey::Name => "Name",
+            SortKey::Modified => "Date Modified",
+            SortKey::Size => "Size",
+            SortKey::Kind => "Kind",
+        }
+    }
+}
 
 /// Folders added to the sidebar under a heading of their own.
 #[derive(Serialize, Deserialize)]
@@ -83,6 +111,8 @@ impl Default for Settings {
             sidebar_items,
             sidebar_groups: Vec::new(),
             column_widths: COLUMN_WIDTHS,
+            sort: SortKey::Name,
+            descending: false,
             dock_widths: DOCK_WIDTHS,
             tint: false,
             tint_turn: 0.,
@@ -130,6 +160,17 @@ impl Settings {
             f(settings);
             store("settings.json", settings);
         });
+    }
+
+    /// Sorts by `key`, the other way round if it's sorted by it already.
+    pub fn sort_by(&mut self, key: SortKey) {
+        if self.sort == key {
+            self.descending = !self.descending;
+        } else {
+            self.sort = key;
+            // Newest and biggest first is what you usually want from those columns.
+            self.descending = matches!(key, SortKey::Modified | SortKey::Size);
+        }
     }
 
     pub fn in_sidebar(&self, path: &Path) -> bool {

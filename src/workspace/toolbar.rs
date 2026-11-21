@@ -1,4 +1,4 @@
-//! The toolbar over a folder: back, forward and up, the path bar, grid or list, the Trash,
+//! The toolbar over a folder: back, forward and up, the path bar, the sort, grid or list, the Trash,
 //! Uninstall and the filter.
 
 use gpui_kit::assets::IconName;
@@ -7,6 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
+    menu::DropdownMenu as _,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
@@ -21,6 +22,17 @@ use crate::{
     places::Places,
     settings::Settings,
 };
+
+/// What folders are sorted by, which its menu changes.
+fn render_sort(cx: &App) -> impl IntoElement + use<> {
+    let Settings { sort, descending, .. } = *Settings::get(cx);
+    Button::new("sort")
+        .ghost()
+        .small()
+        .icon(if descending { IconName::ArrowDownWideNarrow } else { IconName::ArrowUpNarrowWide })
+        .tooltip(format!("Sorted by {}", sort.label()))
+        .dropdown_menu(|menu, _, cx| browser::sort_menu(menu, cx))
+}
 
 impl Workspace {
     pub(super) fn render_toolbar(
@@ -69,6 +81,7 @@ impl Workspace {
                     .size_full(),
                 )
             })
+            .child(render_sort(cx))
             .child({
                 let grid = Settings::get(cx).grid;
                 h_flex()

@@ -12,6 +12,8 @@ gpui_kit::assets::icon_assets!(
         AppWindow,
         AppWindowMac,
         ArchiveRestore,
+        ArrowDownWideNarrow,
+        ArrowUpNarrowWide,
         ClipboardPaste,
         Cloud,
         CloudDownload,

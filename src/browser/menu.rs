@@ -12,11 +12,12 @@ use gpui_kit::{prelude::FluentBuilder as _, *};
 use super::{
     AddToSidebar, Browser, Compress, Copy, CopyPath, Cut, DeleteImmediately, DownloadNow, Duplicate, NewFolder, Open,
     OpenInEditor, OpenInNewTab, OpenInNewWindow, OpenInTerminal, Paste, PutBack, QuickLook, Refresh, RemoveDownload,
-    Rename, ShowPackageContents, Trash, Uninstall, listing::SortKey,
+    Rename, ShowPackageContents, Trash, Uninstall,
 };
 use crate::{
     fs::{self, Entry},
     icons, pasteboard,
+    settings::{Settings, SortKey},
     workspace::actions::{AddToShelf, EmptyTrash},
 };
 
@@ -31,7 +32,6 @@ impl Browser {
         let menu = menu.action_context(this.focus_handle.clone());
         let selected: Vec<Entry> = this.selected_entries().into_iter().cloned().collect();
         let in_trash = this.in_trash();
-        let sort = this.listing.sort;
         let can_paste = !pasteboard::files().is_empty() || pasteboard::has_contents();
         if selected.is_empty() {
             return menu
@@ -47,19 +47,7 @@ impl Browser {
                     menu.separator().menu_with_icon("Empty Trash…", IconName::Trash, Box::new(EmptyTrash))
                 })
                 .separator()
-                .submenu("Sort By", window, cx, {
-                    let entity = entity.clone();
-                    move |menu, _, _| {
-                        SortKey::ALL.into_iter().fold(menu, |menu, key| {
-                            let entity = entity.clone();
-                            menu.item(
-                                PopupMenuItem::new(key.label()).checked(sort == key).on_click(move |_, _, cx| {
-                                    entity.update(cx, |browser, cx| browser.set_sort(key, cx))
-                                }),
-                            )
-                        })
-                    }
-                });
+                .submenu("Sort By", window, cx, |menu, _, cx| sort_menu(menu, cx));
         }
         let mut origins = fs::Origins::default();
         let known = in_trash && selected.iter().any(|e| origins.of(&e.path).is_some());
@@ -151,4 +139,29 @@ impl Browser {
         })
         .when(app, |menu| menu.menu_with_icon("Uninstall…", IconName::PackageX, Box::new(Uninstall)))
     }
+}
+
+/// What folders are sorted by, and which way round, to pick from.
+pub fn sort_menu(menu: PopupMenu, cx: &App) -> PopupMenu {
+    let Settings { sort, descending, .. } = *Settings::get(cx);
+    let order = |label: &'static str, on: bool| {
+        PopupMenuItem::new(label)
+            .checked(descending == on)
+            .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.descending = on))
+    };
+    SortKey::ALL
+        .into_iter()
+        .fold(menu, |menu, key| {
+            menu.item(
+                PopupMenuItem::new(key.label())
+                    .checked(sort == key)
+                    // Unlike a click on its column, it's left as it is when it's checked already.
+                    .when(sort != key, |item| {
+                        item.on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key)))
+                    }),
+            )
+        })
+        .separator()
+        .item(order("Ascending", false))
+        .item(order("Descending", true))
 }
