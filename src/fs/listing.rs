@@ -9,11 +9,16 @@ use std::{
         unix::{ffi::OsStrExt as _, fs::MetadataExt as _, fs::OpenOptionsExt as _, fs::PermissionsExt as _},
     },
     path::{Path, PathBuf},
+    sync::{
+        Weak,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    },
     time::{Duration, SystemTime},
 };
 
 use gpui_kit::{BackgroundExecutor, SharedString};
 use notify::{EventKind, RecursiveMode, Watcher as _, event::ModifyKind};
+use rayon::prelude::*;
 
 use super::{Category, alias_target, describe, extension, icloud, is_package};
 
@@ -93,7 +98,7 @@ pub fn read_dirs<T>(dirs: &[PathBuf], read: impl Fn(&Path) -> io::Result<Vec<T>>
     Ok(found)
 }
 
-/// What an item takes up on disk.
+/// What an item takes up on disk, and how many bytes it holds.
 pub struct Usage {
     pub name: Box<OsStr>,
     /// A folder on the same disk, whose size is what's in it. Links and other disks aren't.
@@ -102,6 +107,8 @@ pub struct Usage {
     pub flags: u32,
     /// The bytes only this file has.
     pub size: u64,
+    /// How many bytes it holds, a link's own rather than what it leads to.
+    pub length: u64,
     /// The bytes it shares with its clones or its other hard links, which count once among them.
     pub shared: Option<(Shared, u64)>,
 }
@@ -144,7 +151,7 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
             | libc::ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: libc::ATTR_DIR_MOUNTSTATUS,
-        fileattr: libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_ALLOCSIZE,
+        fileattr: libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_ALLOCSIZE | libc::ATTR_FILE_DATALENGTH,
         forkattr: libc::ATTR_CMNEXT_PRIVATESIZE | libc::ATTR_CMNEXT_CLONEID,
     };
     let mut items = Vec::new();
@@ -162,6 +169,7 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
         let mount = record.next::<u32>(returned.dirattr & libc::ATTR_DIR_MOUNTSTATUS != 0).unwrap_or(0);
         let links = record.next::<u32>(returned.fileattr & libc::ATTR_FILE_LINKCOUNT != 0).unwrap_or(1);
         let size = record.next::<i64>(returned.fileattr & libc::ATTR_FILE_ALLOCSIZE != 0).unwrap_or(0).max(0) as u64;
+        let length = record.next::<i64>(returned.fileattr & libc::ATTR_FILE_DATALENGTH != 0).unwrap_or(0).max(0) as u64;
         // Disks that can't clone don't say, and then nothing's shared.
         let private = record.next::<i64>(returned.forkattr & libc::ATTR_CMNEXT_PRIVATESIZE != 0);
         let clone = record.next::<u64>(returned.forkattr & libc::ATTR_CMNEXT_CLONEID != 0);
@@ -176,10 +184,24 @@ pub fn list_usage(dir: &Path) -> io::Result<Vec<Usage>> {
             folder: object == VDIR && mount & libc::DIR_MNTSTATUS_MNTPOINT == 0,
             flags,
             size,
+            length,
             shared,
         });
     })?;
     Ok(items)
+}
+
+/// How many bytes the files in `dir` hold, however deep, added to `total` as they're found. Folders
+/// only in iCloud aren't opened, as that would download them. Stops soon after `total` is dropped.
+pub fn folder_size(dir: &Path, total: &Weak<AtomicU64>) {
+    let Some(counted) = total.upgrade() else { return };
+    let items = list_usage(dir).unwrap_or_default();
+    counted.fetch_add(items.iter().map(|item| item.length).sum(), Relaxed);
+    drop(counted);
+    items
+        .par_iter()
+        .filter(|item| item.folder && item.flags & SF_DATALESS == 0)
+        .for_each(|item| folder_size(&dir.join(&*item.name), total));
 }
 
 /// Whether anything in `dir`, however deep, is only in iCloud. A big folder can take a while, so it
@@ -468,6 +490,20 @@ mod tests {
     use objc2_foundation::{NSURL, NSURLBookmarkCreationOptions};
 
     use crate::fs::{Scratch, c_path, file_url};
+
+    #[test]
+    fn adds_up_a_folder_however_deep_without_following_links() {
+        let scratch = Scratch::new("folder-size");
+        let dir = &scratch.0;
+        fs::create_dir_all(dir.join("a/b")).unwrap();
+        fs::write(dir.join("a/b/file"), vec![0u8; 5000]).unwrap();
+        fs::write(dir.join("a/file"), "hi").unwrap();
+        std::os::unix::fs::symlink(dir, dir.join("a/loop")).unwrap();
+        let link = fs::symlink_metadata(dir.join("a/loop")).unwrap().len();
+        let total = std::sync::Arc::new(AtomicU64::new(0));
+        folder_size(dir, &std::sync::Arc::downgrade(&total));
+        assert_eq!(total.load(Relaxed), 5002 + link);
+    }
 
     #[test]
     fn finds_what_is_flagged_however_deep_without_following_links() {

@@ -34,7 +34,8 @@ pub use apps::{app_bundle, apps_to_open, bookmark_target, is_plain_text, open_wi
 pub use archives::{compress, extract, replacement_folder};
 pub use kinds::{Category, extension, is_archive, is_disk_image, is_package, read_text};
 pub use listing::{
-    Changes, Entry, SF_DATALESS, Shared, Usage, disk_usage, holds_cloud_only, list_dir, list_usage, read_dirs, watch,
+    Changes, Entry, SF_DATALESS, Shared, Usage, disk_usage, folder_size, holds_cloud_only, list_dir, list_usage,
+    read_dirs, watch,
 };
 pub use merge::{Choice, Choices, Clash, clashes, copy_into, duplicate, move_into};
 pub use names::{
