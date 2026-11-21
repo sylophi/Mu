@@ -42,6 +42,7 @@ use crate::{
 use layout::Layout;
 use listing::{AfterLoad, Listing, Prefetch};
 use marquee::{Marquee, SelectArea};
+pub use menu::sort_menu;
 use ops::{CutFiles, RenameState};
 use selection::Selection;
 use view::{HEADER_HEIGHT, Mode, TILE_ICON};

@@ -396,8 +396,9 @@ impl Browser {
         if selecting {
             self.selection.set(select);
         }
+        self.listing.sort();
         // Keeps the selection to what shows.
-        self.sort_entries(cx);
+        self.update_visible(cx);
         self.check_cloud(Duration::ZERO, cx);
         if selecting && let Some(ix) = self.cursor_ix() {
             self.scroll_to(ix, ScrollStrategy::Center, cx);
@@ -435,11 +436,6 @@ impl Browser {
                 }
             }
         });
-    }
-
-    fn sort_entries(&mut self, cx: &mut Context<Self>) {
-        self.listing.sort();
-        self.update_visible(cx);
     }
 
     /// Works out which items show, and lets go of the selection, the cursor and a rename on those

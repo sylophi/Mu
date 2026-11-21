@@ -7,7 +7,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::Input,
-    menu::{DropdownMenu as _, PopupMenuItem},
+    menu::DropdownMenu as _,
 };
 use gpui_kit::{prelude::FluentBuilder as _, *};
 
@@ -20,36 +20,18 @@ use super::{
 use crate::{
     browser::{self, Browser},
     places::Places,
-    settings::{Settings, SortKey},
+    settings::Settings,
 };
 
 /// What folders are sorted by, which its menu changes.
 fn render_sort(cx: &App) -> impl IntoElement + use<> {
     let Settings { sort, descending, .. } = *Settings::get(cx);
-    let order = move |label: &'static str, on: bool| {
-        PopupMenuItem::new(label)
-            .checked(descending == on)
-            .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.descending = on))
-    };
     Button::new("sort")
         .ghost()
         .small()
         .icon(if descending { IconName::ArrowDownWideNarrow } else { IconName::ArrowUpNarrowWide })
         .tooltip(format!("Sorted by {}", sort.label()))
-        .dropdown_menu(move |menu, _, _| {
-            SortKey::ALL
-                .into_iter()
-                .fold(menu, |menu, key| {
-                    menu.item(
-                        PopupMenuItem::new(key.label())
-                            .checked(sort == key)
-                            .on_click(move |_, _, cx| Settings::update(cx, |settings| settings.sort_by(key))),
-                    )
-                })
-                .separator()
-                .item(order("Ascending", false))
-                .item(order("Descending", true))
-        })
+        .dropdown_menu(|menu, _, cx| browser::sort_menu(menu, cx))
 }
 
 impl Workspace {
