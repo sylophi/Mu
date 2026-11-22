@@ -4,7 +4,15 @@
 
 mod details;
 
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering::Relaxed},
+    },
+    time::Duration,
+};
 
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, StyledExt as _, Theme, button::Button, h_flex, v_flex};
 use gpui_kit::*;
@@ -52,6 +60,9 @@ pub struct Preview {
     target: Option<Entry>,
     content: Content,
     details: Details,
+    /// A folder's size, as far as it's been added up. It's added up again only for another item, as
+    /// a folder that keeps changing, like Downloads, would otherwise be added up over and over.
+    size: u64,
     /// The processes that have it open, by name.
     in_use_by: Option<String>,
     pictures: Cache,
@@ -63,6 +74,7 @@ pub struct Preview {
     underway: bool,
     _load: Task<()>,
     _details: Task<()>,
+    _size: Task<()>,
     _in_use_by: Task<()>,
     _underway: Subscription,
 }
@@ -83,12 +95,14 @@ impl Preview {
             target: None,
             content: Content::None,
             details: Details::default(),
+            size: 0,
             in_use_by: None,
             pictures: Cache::new(PICTURE),
             scroll: UniformListScrollHandle::new(),
             shown,
             _load: Task::ready(()),
             _details: Task::ready(()),
+            _size: Task::ready(()),
             _in_use_by: Task::ready(()),
             underway: false,
             _underway: underway,
@@ -103,7 +117,11 @@ impl Preview {
 
     pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
         self.shown = shown;
-        self.refresh(cx);
+        match shown {
+            true => self.refresh(cx),
+            // Letting go of the item, which stops adding up a folder.
+            false => self.show(None, cx),
+        }
     }
 
     /// Catches up with the selection, while the pane is shown.
@@ -130,6 +148,7 @@ impl Preview {
         (self._load, self._details) = (Task::ready(()), Task::ready(()));
         if moved {
             (self.in_use_by, self._in_use_by) = (None, Task::ready(()));
+            (self.size, self._size) = (0, Task::ready(()));
         }
         self.scroll = UniformListScrollHandle::new();
         self.pictures.trim(None, None, cx);
@@ -150,6 +169,9 @@ impl Preview {
         });
         // An alias shows what it leads to.
         let path = entry.target().to_path_buf();
+        if moved && (entry.folder || entry.package) && !entry.cloud_only {
+            self._size = Self::add_up(path.clone(), cx);
+        }
         // Looking through every process's open files takes tens of milliseconds, so it waits for
         // the selection to settle, rather than running for each item arrowed past. macOS's own
         // processes don't count, as one is Quick Look, making this pane's picture of it.
@@ -194,6 +216,43 @@ impl Preview {
             })
             .ok();
         });
+    }
+
+    /// Adds up the size of the folder at `path`, showing it as it goes, once the selection
+    /// settles.
+    fn add_up(path: PathBuf, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(150)).await;
+            // The walk stops once this is dropped, with the task.
+            let total = Arc::new(AtomicU64::new(0));
+            let walk = cx.background_spawn({
+                let total = Arc::downgrade(&total);
+                async move {
+                    // Not a disk, or a link to one, as that's how full the disk is, or a share that
+                    // would be read all through.
+                    let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    if path.parent().is_some_and(|parent| fs::same_volume(&path, parent)) {
+                        fs::folder_size(&path, &total);
+                    }
+                }
+            });
+            let show = |cx: &mut AsyncApp| {
+                this.update(cx, |this, cx| {
+                    this.size = total.load(Relaxed);
+                    cx.notify();
+                })
+                .ok();
+            };
+            // As it goes, then once it's done.
+            let showing = async {
+                loop {
+                    cx.background_executor().timer(Duration::from_millis(150)).await;
+                    show(cx);
+                }
+            };
+            smol::future::or(walk, showing).await;
+            show(cx);
+        })
     }
 }
 
@@ -265,9 +324,17 @@ impl Render for Preview {
         };
         let detail = |label, value| detail(label, value, theme);
         let transfer = Underway::global(cx).read(cx).get(&entry.path);
+        // A folder's size shows once there's some to show, as it's added up.
+        let added_up = (self.size > 0).then(|| fs::format_size(self.size));
         let size = match &self.content {
-            Content::Folder(count) => Some(fs::count(*count, "item", "items")),
-            _ if entry.folder || entry.package => None,
+            Content::Folder(count) => {
+                let count = fs::count(*count, "item", "items");
+                Some(match added_up {
+                    Some(size) => format!("{size}, {count}"),
+                    None => count,
+                })
+            }
+            _ if entry.folder || entry.package => added_up,
             _ => Some(fs::format_size(entry.size)),
         };
         pane.child(div().flex_1().min_h_0().child(content)).child(
