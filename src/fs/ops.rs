@@ -3,20 +3,26 @@
 //! making a folder or a file.
 
 use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
     ffi::{CStr, OsStr, c_void},
     fs,
     io::{self, Write as _},
     os::{macos::fs::MetadataExt as _, unix::ffi::OsStrExt as _},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+    },
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use rayon::prelude::*;
 
 use super::{
     Done,
     admin::{self, Step},
-    c_path, display_name,
+    c_path, display_name, list_usage,
     underway::Published,
 };
 
@@ -63,16 +69,20 @@ pub(super) fn each<T, R>(items: &[T], mut op: impl FnMut(&T) -> Result<R>) -> (V
 /// How far a file operation's copying has got, and a way to stop it.
 #[derive(Default)]
 pub struct Progress {
-    /// Bytes to copy, counted before copying starts.
+    /// Bytes to copy, counted while copying goes on.
     total: AtomicU64,
+    /// Whether `total` is still being counted.
+    counting: AtomicBool,
+    /// How many bytes are in each folder counted so far, for its own progress.
+    folders: Mutex<HashMap<PathBuf, u64>>,
     copied: AtomicU64,
     cancelled: AtomicBool,
 }
 
 impl Progress {
-    /// Bytes copied so far, of how many.
-    pub fn bytes(&self) -> (u64, u64) {
-        (self.copied.load(Relaxed), self.total.load(Relaxed))
+    /// Bytes copied so far, and of how many once they're all counted.
+    pub fn bytes(&self) -> (u64, Option<u64>) {
+        (self.copied.load(Relaxed), (!self.counting.load(Relaxed)).then(|| self.total.load(Relaxed)))
     }
 
     /// Stops the operation at the next chance. What's been copied stays, except a partial item.
@@ -84,26 +94,71 @@ impl Progress {
         if self.cancelled.load(Relaxed) { Err(Cancelled.into()) } else { Ok(()) }
     }
 
-    /// Adds what copying `paths` will write to the total.
-    pub(super) fn expect<'a>(&self, paths: impl IntoIterator<Item = &'a PathBuf>) {
-        self.total.fetch_add(paths.into_iter().map(|path| size(path)).sum(), Relaxed);
+    /// Runs `work`, counting what copying `paths` will write alongside it, so copying starts right
+    /// away rather than once a slow disk has told the size of everything.
+    pub(super) fn expecting<'a, R>(
+        &self,
+        paths: impl IntoIterator<Item = &'a PathBuf> + Send,
+        work: impl FnOnce() -> R,
+    ) -> R {
+        self.counting.store(true, Relaxed);
+        let finished = &AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                for path in paths {
+                    let size = self.measure(path, finished);
+                    self.total.fetch_add(size, Relaxed);
+                }
+                if !finished.load(Relaxed) {
+                    self.counting.store(false, Relaxed);
+                }
+            });
+            let result = work();
+            finished.store(true, Relaxed);
+            result
+        });
+        // Done before the count was, it's at least what was copied.
+        self.total.fetch_max(self.copied.load(Relaxed), Relaxed);
+        self.counting.store(false, Relaxed);
+        result
     }
 
-    /// Takes `path`, which was expected but won't be copied after all, off the total.
-    pub(super) fn skip(&self, path: &Path) {
-        let size = size(path);
-        let _ = self.total.fetch_update(Relaxed, Relaxed, |total| Some(total.saturating_sub(size)));
-    }
-}
-
-/// How many bytes are in `path`, all the way down.
-fn size(path: &Path) -> u64 {
-    match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_dir() => {
-            fs::read_dir(path).map(|items| items.flatten().map(|item| size(&item.path())).sum()).unwrap_or(0)
+    /// How many bytes are in `path`, all the way down, keeping each folder's for later, until the
+    /// work's `finished` or cancelled.
+    fn measure(&self, path: &Path, finished: &AtomicBool) -> u64 {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() => self.measure_folder(path, finished),
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
         }
-        Ok(meta) => meta.len(),
-        Err(_) => 0,
+    }
+
+    /// Like `measure`, for the folder at `dir`, its items listed in bulk and its folders counted at
+    /// once, as each costs a round trip on a network disk.
+    fn measure_folder(&self, dir: &Path, finished: &AtomicBool) -> u64 {
+        if finished.load(Relaxed) || self.check().is_err() {
+            return 0;
+        }
+        let items = list_usage(dir).unwrap_or_default();
+        let size = items
+            .par_iter()
+            .map(|item| match item.folder {
+                true => self.measure_folder(&dir.join(&*item.name), finished),
+                false => item.length,
+            })
+            .sum();
+        self.folders.lock().unwrap().insert(dir.to_path_buf(), size);
+        size
+    }
+
+    /// How many bytes are in the folder at `path`, once that's been counted.
+    fn folder(&self, path: &Path) -> Option<u64> {
+        self.folders.lock().unwrap().get(path).copied()
+    }
+
+    /// Counts `path`, which was expected but won't be copied after all, as done.
+    pub(super) fn skip(&self, path: &Path) {
+        self.copied.fetch_add(self.measure(path, &AtomicBool::new(false)), Relaxed);
     }
 }
 
@@ -123,8 +178,7 @@ impl std::error::Error for Cancelled {}
 /// what it made of `to`.
 pub(super) fn copy_path(from: &Path, to: &Path, progress: &Progress) -> Result<()> {
     progress.check()?;
-    let published = Published::copying(to, size(from));
-    let Err(error) = copyfile(from, to, progress, Some(&published)) else { return Ok(()) };
+    let Err(error) = copyfile(from, to, progress, true) else { return Ok(()) };
     if progress.check().is_err() {
         let _ = remove_all(to);
         return Err(Cancelled.into());
@@ -144,15 +198,16 @@ pub(super) fn copy_path(from: &Path, to: &Path, progress: &Progress) -> Result<(
 }
 
 /// Copies with the system's `copyfile`, which clones on APFS and keeps metadata, like Finder, and
-/// counts what it writes in `progress`, and in `item` for what it's copying.
-pub fn copyfile(from: &Path, to: &Path, progress: &Progress, item: Option<&Published>) -> io::Result<()> {
+/// counts what it writes in `progress`. With `publish`, it tells how far it's got with each item
+/// it's copying, all the way down, as it gets to them.
+pub fn copyfile(from: &Path, to: &Path, progress: &Progress, publish: bool) -> io::Result<()> {
     let (from_c, to_c) = (c_path(from)?, c_path(to)?);
     let flags = libc::COPYFILE_METADATA
         | libc::COPYFILE_DATA
         | libc::COPYFILE_RECURSIVE
         | libc::COPYFILE_CLONE
         | libc::COPYFILE_NOFOLLOW_SRC;
-    let tracker = Tracker { progress, file: Default::default(), item: item.map(|item| (item, progress.bytes().0)) };
+    let tracker = Tracker { progress, file: Default::default(), items: publish.then(Default::default) };
     let state = unsafe { libc::copyfile_state_alloc() };
     let callback: CopyCallback = copy_status;
     let (result, error) = unsafe {
@@ -179,45 +234,126 @@ pub(super) fn delete_path(path: &Path) -> Result<()> {
 
 type CopyCallback = extern "C" fn(i32, i32, libc::copyfile_state_t, *const i8, *const i8, *mut c_void) -> i32;
 
-/// What `copy_status` needs: where to count, and how much of the current file it has counted. And
-/// the item it's copying, with what had been copied before it.
+/// What `copy_status` needs: where to count, and the file it's copying. And when publishing, the
+/// items it's in the middle of copying, from the outermost in.
 struct Tracker<'a> {
     progress: &'a Progress,
-    file: std::cell::Cell<u64>,
-    item: Option<(&'a Published, u64)>,
+    file: Cell<File>,
+    items: Option<RefCell<Vec<Item>>>,
 }
 
-/// Hears from `copyfile` as it goes: counts the bytes it writes, and stops it at the first error, as
-/// it would by itself, or when cancelled.
+/// The file being copied: how big it is, how much of it has been counted, and whether it's told
+/// how far it's got.
+#[derive(Clone, Copy, Default)]
+struct File {
+    size: u64,
+    counted: u64,
+    published: bool,
+}
+
+/// An item being copied, and how far that's got, counting from what had been copied before it.
+struct Item {
+    published: Published,
+    before: u64,
+    /// Where a folder whose size is still being counted is copied from, to look it up by.
+    pending: Option<PathBuf>,
+}
+
+impl Tracker<'_> {
+    /// Starts telling how far copying a folder from `from` to `to` has got.
+    fn start_folder(&self, from: &Path, to: &Path) {
+        let Some(items) = &self.items else { return };
+        let size = self.progress.folder(from);
+        let item = Item {
+            published: Published::copying(to, size),
+            before: self.progress.copied.load(Relaxed),
+            pending: size.is_none().then(|| from.to_path_buf()),
+        };
+        items.borrow_mut().push(item);
+    }
+
+    /// Stops telling of the innermost item, which is done.
+    fn finish(&self) {
+        if let Some(items) = &self.items {
+            items.borrow_mut().pop();
+        }
+    }
+
+    /// Counts `bytes` of the current file copied to `to` so far, in all and in each item it's in. A
+    /// file that's partway starts telling how far it's got, while one copied in one go never needs
+    /// to.
+    fn count(&self, bytes: u64, to: Option<&Path>) {
+        let mut file = self.file.get();
+        let added = bytes.saturating_sub(file.counted);
+        let copied = self.progress.copied.fetch_add(added, Relaxed) + added;
+        // What had been copied before this file.
+        let before = copied - added - file.counted;
+        file.counted = bytes;
+        let Some(items) = &self.items else { return self.file.set(file) };
+        let mut items = items.borrow_mut();
+        if let Some(to) = to
+            && !file.published
+            && bytes < file.size
+        {
+            let published = Published::copying(to, Some(file.size));
+            items.push(Item { published, before, pending: None });
+            file.published = true;
+        }
+        self.file.set(file);
+        for item in items.iter_mut() {
+            // Folders are counted alongside, so their size may have come in since they started.
+            if let Some(from) = &item.pending
+                && let Some(size) = self.progress.folder(from)
+            {
+                item.published.set_total(size);
+                item.pending = None;
+            }
+            item.published.set_copied(copied - item.before);
+        }
+    }
+
+    /// Counts the current file as done, as a cloned one writes nothing, and stops telling of it.
+    fn finish_file(&self) {
+        let file = self.file.get();
+        self.count(file.size, None);
+        if file.published {
+            self.finish();
+        }
+    }
+}
+
+/// Hears from `copyfile` as it goes: counts the bytes it writes and tells of the items it copies,
+/// and stops it at the first error, as it would by itself, or when cancelled.
 extern "C" fn copy_status(
     what: i32,
     stage: i32,
     state: libc::copyfile_state_t,
     from: *const i8,
-    _to: *const i8,
+    to: *const i8,
     context: *mut c_void,
 ) -> i32 {
     let tracker = unsafe { &*context.cast::<Tracker>() };
-    let count = |bytes: u64| {
-        let added = bytes.saturating_sub(tracker.file.replace(bytes));
-        let copied = tracker.progress.copied.fetch_add(added, Relaxed) + added;
-        if let Some((item, before)) = tracker.item {
-            item.set_copied(copied - before);
-        }
+    let path = |path: *const i8| {
+        (!path.is_null()).then(|| Path::new(OsStr::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes())))
     };
     match (what, stage) {
         (_, libc::COPYFILE_ERR) => return libc::COPYFILE_QUIT,
-        (libc::COPYFILE_RECURSE_FILE, libc::COPYFILE_START) => tracker.file.set(0),
+        (libc::COPYFILE_RECURSE_DIR, libc::COPYFILE_START) => {
+            if let (Some(from), Some(to)) = (path(from), path(to)) {
+                tracker.start_folder(from, to);
+            }
+        }
+        (libc::COPYFILE_RECURSE_DIR_CLEANUP, libc::COPYFILE_FINISH) => tracker.finish(),
+        (libc::COPYFILE_RECURSE_FILE, libc::COPYFILE_START) => {
+            let size = path(from).and_then(|from| fs::symlink_metadata(from).ok()).map_or(0, |meta| meta.len());
+            tracker.file.set(File { size, ..File::default() });
+        }
         (libc::COPYFILE_COPY_DATA, libc::COPYFILE_PROGRESS) => {
             let mut copied: libc::off_t = 0;
             unsafe { libc::copyfile_state_get(state, libc::COPYFILE_STATE_COPIED as u32, (&raw mut copied).cast()) };
-            count(copied as u64);
+            tracker.count(copied as u64, path(to));
         }
-        // A cloned file writes nothing, so it counts in one go.
-        (libc::COPYFILE_RECURSE_FILE, libc::COPYFILE_FINISH) if !from.is_null() => {
-            let from = Path::new(OsStr::from_bytes(unsafe { CStr::from_ptr(from) }.to_bytes()));
-            count(fs::symlink_metadata(from).map_or(0, |meta| meta.len()));
-        }
+        (libc::COPYFILE_RECURSE_FILE, libc::COPYFILE_FINISH) => tracker.finish_file(),
         _ => {}
     }
     if tracker.progress.check().is_err() { libc::COPYFILE_QUIT } else { libc::COPYFILE_CONTINUE }
@@ -317,6 +453,30 @@ mod tests {
         assert_eq!(unique_path(dir, "v1.2", false), dir.join("v1.2 2"));
         fs::write(dir.join("a copy.txt"), "").unwrap();
         assert_eq!(unique_path(dir, "a.txt", true), dir.join("a copy 2.txt"));
+    }
+
+    #[test]
+    fn counts_while_copying() {
+        let scratch = Scratch::new("counts");
+        let dir = &scratch.0;
+        let (from, to) = (dir.join("from"), dir.join("to"));
+        fs::create_dir_all(from.join("inner")).unwrap();
+        fs::create_dir(from.join("empty")).unwrap();
+        fs::write(from.join("a.bin"), vec![1; 300_000]).unwrap();
+        fs::write(from.join("inner/b.bin"), vec![2; 200_000]).unwrap();
+        std::os::unix::fs::symlink("a.bin", from.join("link")).unwrap();
+
+        // Each folder's size is kept, for its own progress.
+        let counting = Progress::default();
+        assert_eq!(counting.measure(&from, &AtomicBool::new(false)), 500_005);
+        assert_eq!(counting.folder(&from.join("inner")), Some(200_000));
+        assert_eq!(counting.folder(&from.join("empty")), Some(0));
+
+        // Whichever's done first, copying or counting, it all adds up.
+        let progress = Progress::default();
+        progress.expecting([&from], || copy_path(&from, &to, &progress)).unwrap();
+        assert_eq!(progress.bytes(), (500_005, Some(500_005)));
+        assert_eq!(names(&to), ["a.bin", "empty", "inner", "link"]);
     }
 
     #[test]

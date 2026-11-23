@@ -60,7 +60,7 @@ impl Step {
     fn run(self) -> Result<()> {
         match self {
             Step::Rename(from, to) => fs::rename(from, to)?,
-            Step::Copy(from, to) => files::copyfile(&from, &to, &Progress::default(), None)?,
+            Step::Copy(from, to) => files::copyfile(&from, &to, &Progress::default(), false)?,
             Step::MakeFolder(path) => fs::create_dir_all(path)?,
             Step::Write(path, bytes) => File::create_new(path)?.write_all(&bytes)?,
             Step::Save(path, bytes) => fs::write(path, bytes)?,

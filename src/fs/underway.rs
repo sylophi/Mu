@@ -174,9 +174,9 @@ const BY_MU: &str = "MuOperation";
 pub struct Published(Retained<NSProgress>);
 
 impl Published {
-    /// For `bytes` being copied to `path`.
-    pub fn copying(path: &Path, bytes: u64) -> Self {
-        let progress = NSProgress::discreteProgressWithTotalUnitCount(bytes as i64);
+    /// For `bytes` being copied to `path`, or for copying that's yet to tell how many.
+    pub fn copying(path: &Path, bytes: Option<u64>) -> Self {
+        let progress = NSProgress::discreteProgressWithTotalUnitCount(bytes.map_or(-1, |bytes| bytes as i64));
         unsafe {
             progress.setKind(Some(NSProgressKindFile));
             progress.setFileOperationKind(Some(NSProgressFileOperationKindCopying));
@@ -187,6 +187,10 @@ impl Published {
         progress.setFileURL(Some(&file_url(path)));
         progress.publish();
         Self(progress)
+    }
+
+    pub fn set_total(&self, bytes: u64) {
+        self.0.setTotalUnitCount(bytes as i64);
     }
 
     pub fn set_copied(&self, bytes: u64) {

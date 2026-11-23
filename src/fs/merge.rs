@@ -206,19 +206,20 @@ impl<'a> Merge<'a> {
 /// and each clash goes as `choices` says. A name that's taken in the same folder gets a " copy"
 /// suffix, so pasting there duplicates.
 pub fn copy_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
-    progress.expect(sources);
     let mut merge = Merge::new(choices, progress);
-    let (landed, error) = each(sources, |source| {
-        if dir.starts_with(source) {
-            bail!("Can't copy “{}” into itself", display_name(source));
-        }
-        if source.parent() == Some(dir) {
-            let target = unique_path(dir, &disk_name(source).to_string_lossy(), true);
-            copy_path(source, &target, progress)?;
-            merge.made.push(target.clone());
-            return Ok(Some(target));
-        }
-        merge.copy(source, &dir.join(copy_name(source)))
+    let (landed, error) = progress.expecting(sources, || {
+        each(sources, |source| {
+            if dir.starts_with(source) {
+                bail!("Can't copy “{}” into itself", display_name(source));
+            }
+            if source.parent() == Some(dir) {
+                let target = unique_path(dir, &disk_name(source).to_string_lossy(), true);
+                copy_path(source, &target, progress)?;
+                merge.made.push(target.clone());
+                return Ok(Some(target));
+            }
+            merge.copy(source, &dir.join(copy_name(source)))
+        })
     });
     merge.done(landed.into_iter().flatten().collect(), error)
 }
@@ -231,12 +232,13 @@ fn copy_name(source: &Path) -> OsString {
 
 /// Copies each of `sources` next to itself, under a name of its own, like "notes copy.txt".
 pub fn duplicate(sources: &[PathBuf], progress: &Progress) -> Done {
-    progress.expect(sources);
-    let (made, error) = each(sources, |source| {
-        let dir = source.parent().context("Can't duplicate the top of a disk")?;
-        let target = unique_path(dir, &disk_name(source).to_string_lossy(), true);
-        copy_path(source, &target, progress)?;
-        Ok(target)
+    let (made, error) = progress.expecting(sources, || {
+        each(sources, |source| {
+            let dir = source.parent().context("Can't duplicate the top of a disk")?;
+            let target = unique_path(dir, &disk_name(source).to_string_lossy(), true);
+            copy_path(source, &target, progress)?;
+            Ok(target)
+        })
     });
     Done::created(made, error)
 }
@@ -245,24 +247,25 @@ pub fn duplicate(sources: &[PathBuf], progress: &Progress) -> Done {
 /// and each clash goes as `choices` says. A folder that's emptied goes to the Trash, or for good
 /// on a volume without one.
 pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
-    progress.expect(sources.iter().filter(|source| !same_volume(source, dir)));
     let mut merge = Merge::new(choices, progress);
-    let (landed, error) = each(sources, |source| {
-        if source.parent() == Some(dir) {
-            return Ok(source.clone());
-        }
-        if dir.starts_with(source) {
-            bail!("Can't move “{}” into itself", display_name(source));
-        }
-        merge.counted = !same_volume(source, dir);
-        let to = dir.join(disk_name(source));
-        Ok(match merge.r#move(source, &to)? {
-            Left::Gone(landed) => landed,
-            Left::Shell => {
-                merge.shells.push(source.clone());
-                to
+    let (landed, error) = progress.expecting(sources.iter().filter(|source| !same_volume(source, dir)), || {
+        each(sources, |source| {
+            if source.parent() == Some(dir) {
+                return Ok(source.clone());
             }
-            Left::Items => to,
+            if dir.starts_with(source) {
+                bail!("Can't move “{}” into itself", display_name(source));
+            }
+            merge.counted = !same_volume(source, dir);
+            let to = dir.join(disk_name(source));
+            Ok(match merge.r#move(source, &to)? {
+                Left::Gone(landed) => landed,
+                Left::Shell => {
+                    merge.shells.push(source.clone());
+                    to
+                }
+                Left::Items => to,
+            })
         })
     });
     merge.done(landed, error)
@@ -319,7 +322,7 @@ mod tests {
         let progress = Progress::default();
         let copied = copy_into(&[from.clone(), from.join("a.bin")], &to, &Choices::new(), &progress);
         assert!(copied.error.is_none());
-        assert_eq!(progress.bytes(), (800_000, 800_000));
+        assert_eq!(progress.bytes(), (800_000, Some(800_000)));
 
         let cancelled = Progress::default();
         cancelled.cancel();
@@ -401,13 +404,13 @@ mod tests {
         let (from, to) = photos(dir);
         let into = dir.join("to");
 
-        // Skipped, the old one stays and the rest comes in, and only what's copied counts.
+        // Skipped, the old one stays and the rest comes in, and what's skipped counts as done.
         let skip = Choices::from([(to.join("a.txt"), Choice::Skip)]);
         let progress = Progress::default();
         let copied = copy_into(std::slice::from_ref(&from), &into, &skip, &progress);
         assert!(copied.error.is_none());
         assert_eq!(copied.paths, std::slice::from_ref(&to));
-        assert_eq!(progress.bytes(), (2, 2));
+        assert_eq!(progress.bytes(), (5, Some(5)));
         assert_eq!(names(&to), ["Inner", "a.txt", "b.txt", "d.txt"]);
         assert_eq!(names(&to.join("Inner")), ["c.txt"]);
         assert_eq!(fs::read_to_string(to.join("a.txt")).unwrap(), "old");
