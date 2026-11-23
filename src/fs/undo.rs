@@ -82,13 +82,12 @@ impl Undo {
     pub fn apply(&self, progress: &Progress) -> Done {
         match self {
             Undo::Move(moves) => {
-                progress.expect(
-                    moves
-                        .iter()
-                        .filter(|(from, to)| !same_volume(from, to.parent().unwrap_or(to)))
-                        .map(|(from, _)| from),
-                );
-                let (moved, error) = each(moves, |(from, to)| Ok((from.clone(), move_path(from, to, progress)?)));
+                let copied = moves
+                    .iter()
+                    .filter(|(from, to)| !same_volume(from, to.parent().unwrap_or(to)))
+                    .map(|(from, _)| from);
+                let (moved, error) = progress
+                    .expecting(copied, || each(moves, |(from, to)| Ok((from.clone(), move_path(from, to, progress)?))));
                 Done::moved(moved, error)
             }
             Undo::Trash(paths) => {

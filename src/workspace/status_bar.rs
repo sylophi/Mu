@@ -78,7 +78,9 @@ impl Render for Meters {
 fn operations(cx: &App) -> Vec<&operations::Transfer> {
     operations::transfers(cx)
         .iter()
-        .filter(|transfer| transfer.started.elapsed() > Duration::from_millis(500) && transfer.progress.bytes().1 > 0)
+        .filter(|transfer| {
+            transfer.started.elapsed() > Duration::from_millis(500) && transfer.progress.bytes().1 != Some(0)
+        })
         .collect()
 }
 
@@ -96,11 +98,12 @@ fn render_transfers(cx: &App) -> Option<impl IntoElement + use<>> {
     }
     let count = |direction| others.iter().filter(|transfer| transfer.direction == direction).count();
     let copies = count(Direction::Copy) + operations.len();
+    // How much is left is only known once all of Mu's copying has been counted.
     let (done, total) = operations
         .iter()
         .map(|operation| operation.progress.bytes())
-        .chain(others.iter().filter_map(|transfer| transfer.bytes()))
-        .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+        .chain(others.iter().filter_map(|transfer| transfer.bytes()).map(|(done, total)| (done, Some(total))))
+        .fold((0, Some(0)), |(a, b), (c, d)| (a + c, b.zip(d).map(|(b, d)| b + d)));
     let theme = cx.theme();
     let counts = [
         (IconName::ArrowUp, count(Direction::Upload)),
@@ -117,7 +120,7 @@ fn render_transfers(cx: &App) -> Option<impl IntoElement + use<>> {
                     .filter(|(_, count)| *count > 0)
                     .map(|(icon, count)| h_flex().gap_0p5().child(Icon::new(icon).xsmall()).child(count.to_string())),
             )
-            .when(total > 0, |el| {
+            .when_some(total.filter(|total| *total > 0), |el, total| {
                 el.child(
                     div()
                         .text_color(theme.muted_foreground)
@@ -160,8 +163,8 @@ fn render_transfer_list(cx: &App) -> impl IntoElement + use<> {
                     SharedString::from(format!("operation-{ix}")),
                     Icon::new(IconName::Copy).size(JOB_ICON).text_color(theme.muted_foreground).into_any_element(),
                     operation.verb.into(),
-                    Some(done as f64 / total as f64),
-                    underway::of(done, total),
+                    total.map(|total| done as f64 / total as f64),
+                    total.map_or_else(|| fs::format_size(done), |total| underway::of(done, total)),
                     Some(move || progress.cancel()),
                     theme,
                 )
@@ -270,8 +273,9 @@ impl Workspace {
                         summary.push_str(&format!(", {}", fs::format_size(size)));
                     }
                 }
-                info.when(!operations::transfers(cx).is_empty(), |el| el.child(Spinner::new().xsmall()))
-                    .child(truncated(summary))
+                // What the transfers pill doesn't show, like moving to the Trash, spins here.
+                let unshown = operations::transfers(cx).len() > operations(cx).len();
+                info.when(unshown, |el| el.child(Spinner::new().xsmall())).child(truncated(summary))
             }
             Some(Item::Terminal(terminal)) => info.child(truncated(shown_path(&terminal.read(cx).cwd()))),
             Some(Item::Editor(editor)) => info.child(editor.read(cx).cursor_label(cx)),
