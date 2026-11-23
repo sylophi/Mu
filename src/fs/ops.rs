@@ -12,12 +12,14 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+        atomic::{
+            AtomicBool, AtomicU64,
+            Ordering::{Acquire, Relaxed, Release},
+        },
     },
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use rayon::prelude::*;
 
 use super::{
     Done,
@@ -82,7 +84,7 @@ pub struct Progress {
 impl Progress {
     /// Bytes copied so far, and of how many once they're all counted.
     pub fn bytes(&self) -> (u64, Option<u64>) {
-        (self.copied.load(Relaxed), (!self.counting.load(Relaxed)).then(|| self.total.load(Relaxed)))
+        (self.copied.load(Relaxed), (!self.counting.load(Acquire)).then(|| self.total.load(Relaxed)))
     }
 
     /// Stops the operation at the next chance. What's been copied stays, except a partial item.
@@ -110,7 +112,7 @@ impl Progress {
                     self.total.fetch_add(size, Relaxed);
                 }
                 if !finished.load(Relaxed) {
-                    self.counting.store(false, Relaxed);
+                    self.counting.store(false, Release);
                 }
             });
             let result = work();
@@ -119,7 +121,7 @@ impl Progress {
         });
         // Done before the count was, it's at least what was copied.
         self.total.fetch_max(self.copied.load(Relaxed), Relaxed);
-        self.counting.store(false, Relaxed);
+        self.counting.store(false, Release);
         result
     }
 
@@ -133,21 +135,24 @@ impl Progress {
         }
     }
 
-    /// Like `measure`, for the folder at `dir`, its items listed in bulk and its folders counted at
-    /// once, as each costs a round trip on a network disk.
+    /// Like `measure`, for the folder at `dir`, its items listed in bulk, as each call costs a round
+    /// trip on a network disk. Only a folder counted all the way is kept.
     fn measure_folder(&self, dir: &Path, finished: &AtomicBool) -> u64 {
-        if finished.load(Relaxed) || self.check().is_err() {
+        let stopped = || finished.load(Relaxed) || self.check().is_err();
+        if stopped() {
             return 0;
         }
         let items = list_usage(dir).unwrap_or_default();
         let size = items
-            .par_iter()
+            .iter()
             .map(|item| match item.folder {
                 true => self.measure_folder(&dir.join(&*item.name), finished),
                 false => item.length,
             })
             .sum();
-        self.folders.lock().unwrap().insert(dir.to_path_buf(), size);
+        if !stopped() {
+            self.folders.lock().unwrap().insert(dir.to_path_buf(), size);
+        }
         size
     }
 
@@ -272,16 +277,34 @@ impl Tracker<'_> {
         items.borrow_mut().push(item);
     }
 
-    /// Stops telling of the innermost item, which is done.
-    fn finish(&self) {
+    /// Starts on a file copied from `from` to `to`. The outermost item tells of itself right away,
+    /// so the copy shows however it goes.
+    fn start_file(&self, from: &Path, to: &Path) {
+        let size = fs::symlink_metadata(from).map_or(0, |meta| meta.len());
+        let mut file = File { size, ..File::default() };
         if let Some(items) = &self.items {
-            items.borrow_mut().pop();
+            let mut items = items.borrow_mut();
+            if items.is_empty() {
+                let before = self.progress.copied.load(Relaxed);
+                items.push(Item { published: Published::copying(to, Some(size)), before, pending: None });
+                file.published = true;
+            }
         }
+        self.file.set(file);
+    }
+
+    /// Stops telling of the innermost item, which is done: all there, whatever it was counted to be.
+    fn finish(&self) {
+        let Some(items) = &self.items else { return };
+        let Some(item) = items.borrow_mut().pop() else { return };
+        let done = self.progress.copied.load(Relaxed) - item.before;
+        item.published.set_total(done);
+        item.published.set_copied(done);
     }
 
     /// Counts `bytes` of the current file copied to `to` so far, in all and in each item it's in. A
-    /// file that's partway starts telling how far it's got, while one copied in one go never needs
-    /// to.
+    /// file inside a folder starts telling how far it's got once it's partway, while one copied in
+    /// one go never needs to.
     fn count(&self, bytes: u64, to: Option<&Path>) {
         let mut file = self.file.get();
         let added = bytes.saturating_sub(file.counted);
@@ -345,8 +368,9 @@ extern "C" fn copy_status(
         }
         (libc::COPYFILE_RECURSE_DIR_CLEANUP, libc::COPYFILE_FINISH) => tracker.finish(),
         (libc::COPYFILE_RECURSE_FILE, libc::COPYFILE_START) => {
-            let size = path(from).and_then(|from| fs::symlink_metadata(from).ok()).map_or(0, |meta| meta.len());
-            tracker.file.set(File { size, ..File::default() });
+            if let (Some(from), Some(to)) = (path(from), path(to)) {
+                tracker.start_file(from, to);
+            }
         }
         (libc::COPYFILE_COPY_DATA, libc::COPYFILE_PROGRESS) => {
             let mut copied: libc::off_t = 0;
