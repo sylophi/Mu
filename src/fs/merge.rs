@@ -11,8 +11,8 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 
 use super::{
-    Done, Progress, Undo, copy_path, delete_one, disk_name, display_name, each, icloud, is_package, lacks_trash,
-    move_path, natural_cmp, same_volume, trash_one, trash_or_delete, unique_path,
+    Done, Progress, Source, Undo, copy_path, delete_one, disk_name, display_name, each, icloud, is_package,
+    lacks_trash, move_path, natural_cmp, same_volume, trash_one, trash_or_delete, unique_path,
 };
 
 /// What to do about an item copied or moved in whose name is taken there.
@@ -154,7 +154,10 @@ impl<'a> Merge<'a> {
     fn copy(&mut self, from: &Path, to: &Path) -> Result<Option<PathBuf>> {
         self.progress.check()?;
         if merges(from, to) {
-            let (_, error) = each(&children(from)?, |child| self.copy(child, &to.join(disk_name(child))));
+            let children = children(from)?;
+            let (_, error) = self.progress.into(to, Source::Folder(from.to_path_buf()), || {
+                each(&children, |child| self.copy(child, &to.join(disk_name(child))))
+            });
             return error.map_or(Ok(Some(to.to_path_buf())), Err);
         }
         let Some(target) = self.target(from, to)? else { return Ok(None) };
@@ -176,8 +179,11 @@ impl<'a> Merge<'a> {
             self.moved.push((landed.clone(), from.to_path_buf()));
             return Ok(Left::Gone(landed));
         }
-        let (left, error) =
-            each(&children(from)?, |child| Ok((child.clone(), self.r#move(child, &to.join(disk_name(child)))?)));
+        let children = children(from)?;
+        let (progress, counted) = (self.progress, self.counted);
+        let mut work = || each(&children, |child| Ok((child.clone(), self.r#move(child, &to.join(disk_name(child)))?)));
+        // Moves within a disk are only renamed, which there's nothing to tell of.
+        let (left, error) = if counted { progress.into(to, Source::Folder(from.to_path_buf()), work) } else { work() };
         let whole = error.is_none() && !left.iter().any(|(_, left)| matches!(left, Left::Items));
         // Emptied folders in one that stays go on their own. Otherwise this one takes them along.
         if !whole {
@@ -207,7 +213,7 @@ impl<'a> Merge<'a> {
 /// suffix, so pasting there duplicates.
 pub fn copy_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
     let mut merge = Merge::new(choices, progress);
-    let (landed, error) = progress.expecting(sources, || {
+    let work = || {
         each(sources, |source| {
             if dir.starts_with(source) {
                 bail!("Can't copy “{}” into itself", display_name(source));
@@ -220,7 +226,8 @@ pub fn copy_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
             }
             merge.copy(source, &dir.join(copy_name(source)))
         })
-    });
+    };
+    let (landed, error) = progress.expecting(sources, || progress.into(dir, Source::Everything, work));
     merge.done(landed.into_iter().flatten().collect(), error)
 }
 
@@ -248,7 +255,8 @@ pub fn duplicate(sources: &[PathBuf], progress: &Progress) -> Done {
 /// on a volume without one.
 pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &Progress) -> Done {
     let mut merge = Merge::new(choices, progress);
-    let (landed, error) = progress.expecting(sources.iter().filter(|source| !same_volume(source, dir)), || {
+    let copied: Vec<_> = sources.iter().filter(|source| !same_volume(source, dir)).collect();
+    let mut work = || {
         each(sources, |source| {
             if source.parent() == Some(dir) {
                 return Ok(source.clone());
@@ -256,7 +264,7 @@ pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
             if dir.starts_with(source) {
                 bail!("Can't move “{}” into itself", display_name(source));
             }
-            merge.counted = !same_volume(source, dir);
+            merge.counted = copied.contains(&source);
             let to = dir.join(disk_name(source));
             Ok(match merge.r#move(source, &to)? {
                 Left::Gone(landed) => landed,
@@ -267,6 +275,11 @@ pub fn move_into(sources: &[PathBuf], dir: &Path, choices: &Choices, progress: &
                 Left::Items => to,
             })
         })
+    };
+    // Only what's copied across disks has anything to tell of, as the rest is only renamed.
+    let (landed, error) = progress.expecting(copied.iter().copied(), || match copied.is_empty() {
+        true => work(),
+        false => progress.into(dir, Source::Everything, work),
     });
     merge.done(landed, error)
 }

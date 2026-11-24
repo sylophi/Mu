@@ -142,10 +142,13 @@ pub fn subscribe(dir: &Path, heard: impl Fn(Heard) + 'static) -> Subscription {
     let url = file_url(&dir);
     let started = RcBlock::new(move |progress: NonNull<NSProgress>| -> NSProgressUnpublishingHandler {
         let progress = unsafe { Retained::retain(progress.as_ptr()) }.unwrap();
-        let Some(path) = item_path(&progress).and_then(|path| Some(dir.join(path.file_name()?))) else {
+        let Some(item) = item_path(&progress) else { return null_mut() };
+        let Some(name) = item.file_name() else { return null_mut() };
+        let transfer = Rc::new(Transfer::new(dir.join(name), progress));
+        // Mu's own for the folder itself, copying into it, shows where the folder is.
+        if item == dir && transfer.is_mu() {
             return null_mut();
-        };
-        let transfer = Rc::new(Transfer::new(path, progress));
+        }
         heard(Heard::Started(transfer.clone()));
         let heard = heard.clone();
         let stopped = RcBlock::new(move || heard(Heard::Stopped(transfer.clone())));

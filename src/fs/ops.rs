@@ -79,6 +79,9 @@ pub struct Progress {
     folders: Mutex<HashMap<PathBuf, u64>>,
     copied: AtomicU64,
     cancelled: AtomicBool,
+    /// Folders that were there already and are being copied into, from the outermost in, each
+    /// telling how far that's got.
+    into: Mutex<Vec<Item>>,
 }
 
 impl Progress {
@@ -159,6 +162,33 @@ impl Progress {
     /// How many bytes are in the folder at `path`, once that's been counted.
     fn folder(&self, path: &Path) -> Option<u64> {
         self.folders.lock().unwrap().get(path).copied()
+    }
+
+    /// How many bytes copying `from` writes, once that's been counted.
+    fn size(&self, from: &Source) -> Option<u64> {
+        match from {
+            Source::Folder(path) => self.folder(path),
+            Source::Everything => self.bytes().1,
+        }
+    }
+
+    /// Runs `work`, which copies what's in `from` into `dir`, a folder that's there already,
+    /// telling how far that's got, like the items it copies do, and that it's done unless `work`
+    /// failed or was cancelled.
+    pub(super) fn into<T>(
+        &self,
+        dir: &Path,
+        from: Source,
+        work: impl FnOnce() -> (T, Option<anyhow::Error>),
+    ) -> (T, Option<anyhow::Error>) {
+        let item = Item::counting(dir, from, self);
+        self.into.lock().unwrap().push(item);
+        let result = work();
+        let item = self.into.lock().unwrap().pop().unwrap();
+        if result.1.is_none() {
+            item.finish(self);
+        }
+        result
     }
 
     /// Counts `path`, which was expected but won't be copied after all, as done.
@@ -256,25 +286,60 @@ struct File {
     published: bool,
 }
 
+/// What a folder's copied from, to tell its size by.
+pub(super) enum Source {
+    Folder(PathBuf),
+    /// All that the operation copies.
+    Everything,
+}
+
 /// An item being copied, and how far that's got, counting from what had been copied before it.
 struct Item {
     published: Published,
     before: u64,
-    /// Where a folder whose size is still being counted is copied from, to look it up by.
-    pending: Option<PathBuf>,
+    /// What a folder whose size is still being counted is copied from, to look it up by.
+    pending: Option<Source>,
+}
+
+impl Item {
+    /// Starts telling how far copying `size` bytes to `to` has got.
+    fn sized(to: &Path, size: u64, before: u64) -> Self {
+        Self { published: Published::copying(to, Some(size)), before, pending: None }
+    }
+
+    /// Starts telling how far copying `from` to the folder `to` has got, as big as `from` is once
+    /// that's been counted.
+    fn counting(to: &Path, from: Source, progress: &Progress) -> Self {
+        let size = progress.size(&from);
+        let before = progress.copied.load(Relaxed);
+        Self { published: Published::copying(to, size), before, pending: size.is_none().then_some(from) }
+    }
+
+    /// Tells it's got as far as `copied` in all, and how big it is, once that's been counted, as
+    /// folders are counted alongside.
+    fn update(&mut self, copied: u64, progress: &Progress) {
+        if let Some(from) = &self.pending
+            && let Some(size) = progress.size(from)
+        {
+            self.published.set_total(size);
+            self.pending = None;
+        }
+        self.published.set_copied(copied - self.before);
+    }
+
+    /// Tells it's all there, whatever it was counted to be.
+    fn finish(self, progress: &Progress) {
+        let done = progress.copied.load(Relaxed) - self.before;
+        self.published.set_total(done);
+        self.published.set_copied(done);
+    }
 }
 
 impl Tracker<'_> {
     /// Starts telling how far copying a folder from `from` to `to` has got.
     fn start_folder(&self, from: &Path, to: &Path) {
         let Some(items) = &self.items else { return };
-        let size = self.progress.folder(from);
-        let item = Item {
-            published: Published::copying(to, size),
-            before: self.progress.copied.load(Relaxed),
-            pending: size.is_none().then(|| from.to_path_buf()),
-        };
-        items.borrow_mut().push(item);
+        items.borrow_mut().push(Item::counting(to, Source::Folder(from.to_path_buf()), self.progress));
     }
 
     /// Starts on a file copied from `from` to `to`. The outermost item tells of itself right away,
@@ -285,8 +350,7 @@ impl Tracker<'_> {
         if let Some(items) = &self.items {
             let mut items = items.borrow_mut();
             if items.is_empty() {
-                let before = self.progress.copied.load(Relaxed);
-                items.push(Item { published: Published::copying(to, Some(size)), before, pending: None });
+                items.push(Item::sized(to, size, self.progress.copied.load(Relaxed)));
                 file.published = true;
             }
         }
@@ -297,9 +361,7 @@ impl Tracker<'_> {
     fn finish(&self) {
         let Some(items) = &self.items else { return };
         let Some(item) = items.borrow_mut().pop() else { return };
-        let done = self.progress.copied.load(Relaxed) - item.before;
-        item.published.set_total(done);
-        item.published.set_copied(done);
+        item.finish(self.progress);
     }
 
     /// Counts `bytes` of the current file copied to `to` so far, in all and in each item it's in. A
@@ -318,20 +380,12 @@ impl Tracker<'_> {
             && !file.published
             && bytes < file.size
         {
-            let published = Published::copying(to, Some(file.size));
-            items.push(Item { published, before, pending: None });
+            items.push(Item::sized(to, file.size, before));
             file.published = true;
         }
         self.file.set(file);
-        for item in items.iter_mut() {
-            // Folders are counted alongside, so their size may have come in since they started.
-            if let Some(from) = &item.pending
-                && let Some(size) = self.progress.folder(from)
-            {
-                item.published.set_total(size);
-                item.pending = None;
-            }
-            item.published.set_copied(copied - item.before);
+        for item in self.progress.into.lock().unwrap().iter_mut().chain(items.iter_mut()) {
+            item.update(copied, self.progress);
         }
     }
 

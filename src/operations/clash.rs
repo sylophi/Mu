@@ -27,10 +27,15 @@ const ROWS: usize = 4;
 /// Asks what to do about what copying or moving `paths` into `dir` would clash with, if anything.
 /// Resolves to the choices made, or None when it's cancelled.
 pub fn choose(op: Op, paths: Vec<PathBuf>, dir: PathBuf, window: &mut Window, cx: &mut App) -> Task<Option<Choices>> {
-    let scan = cx.background_spawn({
-        let (paths, dir) = (paths.clone(), dir.clone());
-        async move { fs::clashes(&paths, &dir).into_iter().map(Both::new).collect::<Vec<_>>() }
-    });
+    // Looking through what's there can take a while on a network disk, so it shows as underway.
+    let scan = super::track(
+        op.verb(),
+        {
+            let (paths, dir) = (paths.clone(), dir.clone());
+            move |_| fs::clashes(&paths, &dir).into_iter().map(Both::new).collect::<Vec<_>>()
+        },
+        cx,
+    );
     window.spawn(cx, async move |cx| {
         let clashes = scan.await;
         if clashes.is_empty() {
