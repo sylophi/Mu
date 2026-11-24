@@ -122,8 +122,6 @@ pub struct Workspace {
     group_rename: Option<GroupRename>,
     /// Whether files are being dragged, which the shelf comes out for.
     dragging_files: bool,
-    /// Whether an item added to the sidebar is being dragged.
-    dragging_sidebar_item: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -186,7 +184,6 @@ impl Workspace {
             group_drop: None,
             group_rename: None,
             dragging_files: false,
-            dragging_sidebar_item: false,
             _subscriptions: subscriptions,
         };
         this.onboard(cx);
@@ -262,7 +259,8 @@ impl Render for Workspace {
         // takes nothing, so what it showed is cleared once no drag is going on.
         if !cx.has_active_drag() {
             self.dragging_files = false;
-            self.dragging_sidebar_item = false;
+            self.sidebar_drop = None;
+            self.group_drop = None;
             self.tab_drop = None;
             self.tab_drag = None;
         }

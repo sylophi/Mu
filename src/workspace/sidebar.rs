@@ -165,7 +165,8 @@ fn folders_edge(paths: &[PathBuf]) -> f32 {
 #[derive(Clone, Copy)]
 enum DropArea {
     Row(Slot),
-    /// A group's heading, or the space for items outside any group while there are none.
+    /// A group's heading, or the space for the first item added while there's nothing in the
+    /// sidebar.
     Top(Option<usize>),
     /// Everything added to the sidebar, leaving which clears the drop.
     Added,
@@ -385,9 +386,8 @@ impl Workspace {
                 .child(div().px_2().pb_1().text_xs().font_medium().text_color(cx.theme().muted_foreground).child(title))
                 .children(rows)
         };
-        let dragging = self.dragging_files || self.dragging_sidebar_item;
         let items = match items.is_empty() {
-            true => dragging.then(|| self.render_no_items(cx).into_any_element()),
+            true => (self.dragging_files && groups.is_empty()).then(|| self.render_no_items(cx).into_any_element()),
             false => Some(v_flex().gap_px().children(rows(items, cx)).into_any_element()),
         };
         let groups: Vec<_> = groups
@@ -414,11 +414,7 @@ impl Workspace {
             .p_2()
             .gap_4()
             .overflow_y_scroll()
-            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<DraggedSidebarItem>, window, cx| {
-                if !this.dragging_sidebar_item {
-                    this.dragging_sidebar_item = true;
-                    cx.notify();
-                }
+            .on_drag_move(cx.listener(|_, event: &DragMoveEvent<DraggedSidebarItem>, window, cx| {
                 let removing = !event.bounds.contains(&event.event.position);
                 if event.drag(cx).removing.replace(removing) != removing {
                     window.refresh();
@@ -453,8 +449,8 @@ impl Workspace {
             .children(self.render_shelf(cx))
     }
 
-    /// The space to drag items to while none are outside a group, there during a drag that could
-    /// go in it.
+    /// The space to drag the first item to, there while nothing's in the sidebar during a drag that
+    /// could go in it.
     fn render_no_items(&self, cx: &Context<Self>) -> Div {
         let theme = cx.theme();
         let dropping = cx.has_active_drag() && self.sidebar_drop == Some(Slot { group: None, ix: 0 });
@@ -465,16 +461,23 @@ impl Workspace {
     /// The group at `ix`: a heading that collapses it, which drags to move it, and its `rows`.
     fn render_group(&self, ix: usize, rows: Vec<AnyElement>, cx: &Context<Self>) -> impl IntoElement + use<> {
         let theme = cx.theme();
-        let groups = &Settings::get(cx).sidebar_groups;
+        let settings = Settings::get(cx);
+        let groups = &settings.sidebar_groups;
         let group = &groups[ix];
         let collapsed = group.collapsed;
         let name = SharedString::from(group.name.clone());
         let renaming = self.group_rename.as_ref().filter(|rename| rename.ix == ix);
         let dragging = cx.has_active_drag();
         let dropping_in = rows.is_empty() && dragging && self.sidebar_drop == Some(Slot { group: Some(ix), ix: 0 });
-        // Where a dragged group would go: above this one, or below the last.
-        let line =
-            self.group_drop.filter(|_| dragging).and_then(|drop| drop_line(drop, ix, groups.len(), px(9.), theme));
+        // Whether only the sidebar's padding is above this, with no items outside the groups.
+        let first = ix == 0 && settings.sidebar_items.is_empty();
+        // An item dragged above the first group goes outside the groups.
+        let above = first && self.sidebar_drop == Some(Slot { group: None, ix: 0 });
+        // Where a dragged group or item would go: above this one, or below the last.
+        let line = self.group_drop.or(above.then_some(0)).filter(|_| dragging).and_then(|drop| {
+            let gap = if first && drop == 0 { px(5.) } else { px(9.) };
+            drop_line(drop, ix, groups.len(), gap, theme)
+        });
         let chevron = if collapsed { IconName::ChevronRight } else { IconName::ChevronDown };
         let dragged = DraggedGroup { ix, name: name.clone(), grabbed_at: Point::default() };
         let workspace = cx.weak_entity();
@@ -687,7 +690,8 @@ impl Workspace {
     }
 
     /// Shows where letting go of a drag over `area` would put it: in between near a row's top or
-    /// bottom edge and otherwise on the item, or at the top of the list over its top. Over
+    /// bottom edge and otherwise on the item, or at the top of the list over its top. While no items
+    /// are outside the groups, the top half of the first group's heading puts it outside them. Over
     /// everything added, clears that once the drag leaves.
     fn track_item_drop<E: InteractiveElement>(element: E, area: DropArea, cx: &Context<Self>) -> E {
         fn track<T: SidebarDrag, E: InteractiveElement>(element: E, area: DropArea, cx: &Context<Workspace>) -> E {
@@ -705,6 +709,10 @@ impl Workspace {
                         }
                     }
                     DropArea::Top(group) if bounds.contains(&position) => {
+                        let outside = group == Some(0)
+                            && position.y < bounds.center().y
+                            && Settings::get(cx).sidebar_items.is_empty();
+                        let group = if outside { None } else { group };
                         (event.drag(cx).edge() > 0.).then_some(Slot { group, ix: 0 })
                     }
                     DropArea::Added if !bounds.contains(&position) => None,
