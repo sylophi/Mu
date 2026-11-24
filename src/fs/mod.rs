@@ -53,7 +53,7 @@ pub use volumes::{InUse, Volume, capacity, eject, mount_image, mounted_from, sam
 
 use apps::alias_target;
 use kinds::describe;
-use ops::{copy_path, delete_path, disk_name, each, move_path, unique_path};
+use ops::{Source, copy_path, delete_path, disk_name, each, move_path, unique_path};
 use trash::{clear_origin, delete_one, lacks_trash, trash_one};
 use volumes::{holds_volume, is_network, is_read_only};
 

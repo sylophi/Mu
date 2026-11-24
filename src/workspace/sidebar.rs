@@ -212,7 +212,10 @@ fn drop_line(drop: usize, ix: usize, len: usize, gap: Pixels, theme: &Theme) -> 
 /// underway shows on the innermost place it's in, like Downloads rather than the disk it's on.
 fn underway_by_place(sections: &Sections, cx: &App) -> HashMap<PathBuf, Option<f64>> {
     let mut bytes: HashMap<&Path, Option<(u64, u64)>> = HashMap::new();
-    for transfer in Underway::global(cx).read(cx).all() {
+    let all = Underway::global(cx).read(cx).all();
+    // What's inside something else underway counts as part of it.
+    let inside = |path: &Path| all.iter().any(|other| path != other.path && path.starts_with(&other.path));
+    for transfer in all.iter().filter(|transfer| !inside(&transfer.path)) {
         let place = sections
             .all()
             .filter(|(_, path, place)| *place != Place::Trash && transfer.path.starts_with(path))
