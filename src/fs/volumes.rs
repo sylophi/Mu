@@ -108,12 +108,22 @@ pub fn same_volume(a: &Path, b: &Path) -> bool {
 }
 
 /// Mounts the disk image at `path` like opening it does, but without Finder showing it, and says
-/// where it's mounted. macOS asks for an encrypted one's password, which can be cancelled. An image
-/// that's mounted already says where it is.
+/// where it's mounted. macOS asks for an encrypted one's password, or to agree to a license, either
+/// of which can be cancelled. An image that's mounted already says where it is.
 pub fn mount_image(path: &Path) -> Result<PathBuf> {
-    let stdout = match run(Command::new("/usr/sbin/diskutil").args(["image", "attach"]).arg(path)) {
+    // On some Macs, diskutil asks to agree to a license as text, which nothing here can answer.
+    // DiskImageMounter, which Finder opens images with, asks in a window, though Finder then shows
+    // what it mounts. Attaching again says where, or that they disagreed.
+    let attached = match attach(path) {
+        Err(error) if error.to_string().contains("software license agreement") => {
+            run(Command::new("/usr/bin/open").args(["-W", "-a", "DiskImageMounter"]).arg(path))?;
+            attach(path)
+        }
+        attached => attached,
+    };
+    let stdout = match attached {
         Ok(stdout) => stdout,
-        Err(error) if error.to_string().contains("cancelled by the user") => return Err(Cancelled.into()),
+        Err(error) if cancelled(&error) => return Err(Cancelled.into()),
         Err(error) => {
             bail!("Couldn't open “{}”: {}", display_name(path), error.to_string().trim_start_matches("Error: "))
         }
@@ -121,6 +131,16 @@ pub fn mount_image(path: &Path) -> Result<PathBuf> {
     // A line for each part of it: its device, what it holds and, if that mounted, where.
     let mounted = stdout.lines().find_map(|line| line.splitn(3, '\t').nth(2));
     mounted.map(PathBuf::from).with_context(|| format!("“{}” has nothing to show", display_name(path)))
+}
+
+fn attach(path: &Path) -> Result<String> {
+    run(Command::new("/usr/sbin/diskutil").args(["image", "attach"]).arg(path))
+}
+
+/// Whether diskutil failed because they cancelled a password or disagreed with a license.
+fn cancelled(error: &anyhow::Error) -> bool {
+    let error = error.to_string();
+    error.contains("cancelled by the user") || error.contains("Operation canceled")
 }
 
 /// Ejects the disk mounted at `volume`. When something is using it, this fails with an
