@@ -545,11 +545,13 @@ impl Browser {
             Some(Activity::InCloud) => mark(activity.as_ref(), cx),
             _ => None,
         };
+        // Inside the padding and the item's 1px border.
+        let room = width - (TILE_PADDING + px(1.)) * 2.;
         let (first, rest) = match status {
             Some(_) => (one_line(&entry.name), None),
-            None => match tile_name(one_line(&entry.name), width - TILE_PADDING * 2., wrapper) {
+            None => match tile_name(one_line(&entry.name), room, wrapper) {
                 // A name on one line that leaves no room for the cloud wraps sooner.
-                (first, None) if cloud.is_some() => tile_name(first, width - TILE_PADDING * 2. - CLOUD_MARK, wrapper),
+                (first, None) if cloud.is_some() => tile_name(first, room - CLOUD_MARK, wrapper),
                 wrapped => wrapped,
             },
         };
