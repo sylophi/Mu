@@ -61,6 +61,16 @@ pub fn apps_to_open(paths: &[PathBuf]) -> Vec<(String, PathBuf)> {
     apps
 }
 
+/// Opens `path` in its app, as Finder does. Not through `open`: an app reopened that way hears
+/// from a process without a bundle, and some menu bar apps then don't show their window.
+pub fn open(path: &Path) {
+    NSWorkspace::sharedWorkspace().openURL_configuration_completionHandler(
+        &file_url(path),
+        &NSWorkspaceOpenConfiguration::configuration(),
+        None,
+    );
+}
+
 /// Opens `paths` in `app`.
 pub fn open_with(paths: &[PathBuf], app: &Path) {
     let urls: Vec<_> = paths.iter().map(|path| file_url(path)).collect();

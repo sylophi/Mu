@@ -30,7 +30,7 @@ use anyhow::{Result, bail};
 use objc2::rc::Retained;
 use objc2_foundation::{NSString, NSURL};
 
-pub use apps::{app_bundle, apps_to_open, bookmark_target, is_plain_text, open_with, program_name};
+pub use apps::{app_bundle, apps_to_open, bookmark_target, is_plain_text, open, open_with, program_name};
 pub use archives::{compress, extract, replacement_folder};
 pub use kinds::{Category, extension, is_archive, is_disk_image, is_package, read_text};
 pub use listing::{
