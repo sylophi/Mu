@@ -71,7 +71,7 @@ impl Browser {
             } else if edit && fs::is_plain_text(&file) {
                 cx.emit(TabEvent::Edit { path: file, line: None });
             } else {
-                cx.open_with_system(&file);
+                fs::open(&file);
             }
         }
         if !archives.is_empty() {
